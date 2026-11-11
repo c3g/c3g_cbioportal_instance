@@ -1,0 +1,23 @@
+.Rhistory
+.cache
+.DS_Store
+__pycache__
+'Icon'$'\r
+'Icon'$'\r'
+"Icon\r"
+Icon?
+Icon
+Icon\r
+
+# Runtime data / study data / secrets never go in git
+data/
+studies/
+*.sif
+.ch_password
+application.properties
+*.env
+
+# Access register, study map, approvals: personal data, kept outside the repo
+*.tsv
+*.docx
+approvals/

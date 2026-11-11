@@ -1,0 +1,52 @@
+# systemd user unit for the C3G webapp VM, from the web-app-template (for-maintainers.md).
+# Additions to the template, all marked "c3g_cbioportal_instance:":
+#   --stop-timeout / -t 300 + TimeoutStopSec  -> time for the ordered shutdown (ClickHouse last, cleanly)
+#   --secret x2, -e x2                        -> OIDC login + ClickHouse password
+#   -e OPA_URL, Wants/After opa unit          -> study access decided by the app's OPA (c3g-cbioportal-opa.service)
+# Install (as genome, via `sudo machinectl shell genome@`), after c3g-cbioportal-opa.service:
+#   cp c3g-cbioportal.service ~/.config/systemd/user/.
+#   systemctl --user enable --now c3g-cbioportal.service
+## CHANGE HERE ## <issuer_url>, <client_id>
+## CHANGE HERE - ASK ## host port 8080 (-p 8080:8080): agree the host port with the maintainer
+[Unit]
+Description=C3G cBioPortal (c3g_cbioportal_instance)
+Documentation=man:podman-generate-systemd(1)
+Documentation=https://github.com/c3g/c3g_cbioportal_instance
+Wants=network-online.target
+# c3g_cbioportal_instance: start after its OPA (without it every study is hidden)
+Wants=c3g-cbioportal-opa.service
+After=network-online.target c3g-cbioportal-opa.service
+RequiresMountsFor=%t/containers
+
+[Service]
+Environment=PODMAN_SYSTEMD_UNIT=%n
+Restart=on-failure
+# c3g_cbioportal_instance: ordered shutdown needs up to ~5 min
+TimeoutStopSec=330
+ExecStartPre=/bin/rm -f %t/%n.ctr-id
+## CHANGE HERE - ASK ## host port in -p 8080:8080 below
+ExecStart=/usr/bin/podman run \
+	--cidfile=%t/%n.ctr-id \
+	--cgroups=no-conmon \
+	--rm \
+	--sdnotify=conmon \
+	-d \
+	--replace \
+	--name c3g-cbioportal \
+	--stop-timeout=300 \
+	-v /home/genome/cbioportal-volume:/data:Z \
+	--secret C3G_CBIOPORTAL_OIDC_CLIENT_SECRET,type=env,target=OIDC_CLIENT_SECRET \
+	--secret C3G_CBIOPORTAL_CH_PASSWORD,type=env,target=CLICKHOUSE_PASSWORD \
+	-e OIDC_ISSUER=<issuer_url> \
+	-e OIDC_CLIENT_ID=<client_id> \
+	-e OPA_URL=http://10.0.2.2:8181 \
+	--label io.containers.autoupdate=registry \
+	--network slirp4netns:allow_host_loopback=true \
+	-p 8080:8080 ghcr.io/c3g/c3g_cbioportal_instance:latest
+ExecStop=/usr/bin/podman stop --ignore -t 300 --cidfile=%t/%n.ctr-id
+ExecStopPost=/usr/bin/podman rm -f --ignore --cidfile=%t/%n.ctr-id
+Type=notify
+NotifyAccess=all
+
+[Install]
+WantedBy=default.target

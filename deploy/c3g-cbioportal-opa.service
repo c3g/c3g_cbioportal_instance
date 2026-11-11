@@ -1,0 +1,42 @@
+# systemd user unit for the app's own OPA container, from the web-app-template (for-maintainers.md, "OPA").
+# One OPA per app, pinned release, bound to 127.0.0.1 only; c3g-cbioportal reaches it at 10.0.2.2:8181.
+# It holds the study -> group decisions (policy c3g_cbioportal/authz from c3g-opa-policies).
+# If it is down, c3g-cbioportal hides every study (fail closed) until it answers again.
+# Install (as genome, via `sudo machinectl shell genome@`), BEFORE c3g-cbioportal.service:
+#   cp c3g-cbioportal-opa.service ~/.config/systemd/user/.
+#   systemctl --user enable --now c3g-cbioportal-opa.service
+## CHANGE HERE - ASK ## <bundle_url>: where c3g-opa-policies publishes c3g_cbioportal-bundle.tar.gz
+##   (template form `--bundle <bundle URL>`; if OPA needs a remote-bundle config instead, the maintainer adapts it)
+## CHANGE HERE - ASK ## host port 8181 (another app's OPA may already use it; then also set OPA_URL in c3g-cbioportal.service)
+## CHANGE HERE ## OPA release: pin the current 1.x
+[Unit]
+Description=c3g-cbioportal-opa
+Documentation=man:podman-generate-systemd(1)
+Documentation=https://github.com/c3g/c3g_cbioportal_instance
+Wants=network-online.target
+After=network-online.target
+RequiresMountsFor=%t/containers
+
+[Service]
+Environment=PODMAN_SYSTEMD_UNIT=%n
+Restart=on-failure
+ExecStartPre=/bin/rm -f %t/%n.ctr-id
+ExecStart=/usr/bin/podman run \
+	--cidfile=%t/%n.ctr-id \
+	--cgroups=no-conmon \
+	--rm \
+	--sdnotify=conmon \
+	-d \
+	--replace \
+	--name c3g-cbioportal-opa \
+	--network slirp4netns:allow_host_loopback=true \
+	-p 127.0.0.1:8181:8181 \
+	docker.io/openpolicyagent/opa:1.4.2 \
+	run --server --addr 0.0.0.0:8181 --bundle <bundle_url>
+ExecStop=/usr/bin/podman stop --ignore --cidfile=%t/%n.ctr-id
+ExecStopPost=/usr/bin/podman rm -f --ignore --cidfile=%t/%n.ctr-id
+Type=notify
+NotifyAccess=all
+
+[Install]
+WantedBy=default.target

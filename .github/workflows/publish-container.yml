@@ -1,0 +1,57 @@
+# Verbatim from https://github.com/c3g/web-app-template/blob/main/for-app-developers.md
+name: Publish Container
+
+on:
+  release:
+    types: [published]
+
+env:
+  REGISTRY: ghcr.io
+  REGISTRY_USER: ${{ github.actor }}
+  REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    # Sets the permissions granted to the `GITHUB_TOKEN` for the actions in this job.
+    permissions:
+      contents: write
+      packages: write
+      attestations: write
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Setup Git
+        run: |
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+      # This can be ignored if you don't plan to build a container on multiple architectures
+      ##
+      - name: Update package lists
+        run: sudo apt-get update
+      - name: Install QEMU
+        run: sudo apt-get install --fix-missing qemu-user-static
+      ##
+      # There is an example with 2 architectures, amd64 and arm64. Adapt to your needs
+      - name: Build Container Image
+        uses: redhat-actions/buildah-build@v2
+        with:
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: latest ${{ github.event.release.tag_name }}
+          # Make sure to adapt the path to your Containerfile
+          containerfiles: ./Containerfile
+          archs: amd64,arm64
+      - name: Push to repo
+        uses: redhat-actions/push-to-registry@v2
+        with:
+          username: ${{ env.REGISTRY_USER }}
+          password: ${{ env.REGISTRY_PASSWORD }}
+          registry: ${{ env.REGISTRY }}
+          image: ${{ env.IMAGE_NAME }}
+          tags: latest ${{ github.event.release.tag_name }}

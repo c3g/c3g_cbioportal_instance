@@ -1,0 +1,41 @@
+<?xml version="1.0"?>
+<!--
+    c3g_cbioportal_instance: ClickHouse server config (static, COPY'd to /app/config/ by the Containerfile)
+    - Listens on 127.0.0.1 only: the database is never reachable from outside the container.
+    - Values with from_env are exported by entrypoint.sh (defaults set there):
+        CH_HTTP_PORT (8123), CH_NATIVE_PORT (9000), CH_MAX_MEMORY (8 GB, in bytes),
+        CH_PATH / CH_TMP_PATH / CH_USER_FILES_PATH / CH_FORMAT_SCHEMA_PATH / CH_LOG / CH_ERRORLOG
+    - Data under <CBIO_DATA_DIR, default /data>/clickhouse, logs under <...>/logs (the app volume).
+-->
+<clickhouse>
+    <logger>
+        <level>information</level>
+        <log from_env="CH_LOG"/>
+        <errorlog from_env="CH_ERRORLOG"/>
+        <size>100M</size>
+        <count>3</count>
+    </logger>
+
+    <listen_host>127.0.0.1</listen_host>
+    <http_port from_env="CH_HTTP_PORT"/>
+    <tcp_port from_env="CH_NATIVE_PORT"/>
+
+    <path from_env="CH_PATH"/>
+    <tmp_path from_env="CH_TMP_PATH"/>
+    <user_files_path from_env="CH_USER_FILES_PATH"/>
+    <format_schema_path from_env="CH_FORMAT_SCHEMA_PATH"/>
+
+    <!-- Users file sits next to this one in /app/config/ -->
+    <user_directories>
+        <users_xml><path>clickhouse-users.xml</path></users_xml>
+    </user_directories>
+    <default_profile>default</default_profile>
+
+    <max_server_memory_usage from_env="CH_MAX_MEMORY"/>
+    <mlock_executable>false</mlock_executable>
+
+    <!-- cBioPortal's populate_derived_tables.sql runs OPTIMIZE ... FINAL:
+         background_pool_size * ratio must stay >= 25, else "Code: 36" -->
+    <background_pool_size>16</background_pool_size>
+    <background_merges_mutations_concurrency_ratio>2</background_merges_mutations_concurrency_ratio>
+</clickhouse>
