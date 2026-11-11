@@ -6,7 +6,7 @@ _Last Modified:_ 2026-11-11
 Private [cBioPortal](https://www.cbioportal.org/) 7.1.2 for C3G client studies, in **one container**: webapp + ClickHouse + MongoDB + session-service, run by `entrypoint.sh`.
 Login: C3G COmanage (OIDC). Study access: decided by **OPA**, per COmanage group.
 
-- URL: https://cbioportal.c3g-app.sd4h.ca · Genome: **GRCh38**
+- URL: https://cbioportal.c3g-app.sd4h.ca 
 - Follows the C3G [web-app-template](https://github.com/c3g/web-app-template); exceptions in [Differences](#differences-from-the-web-app-template).
 
 ---
