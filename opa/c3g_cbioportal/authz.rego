@@ -1,12 +1,14 @@
 ################################################################################
 ### c3g_cbioportal_instance - study access policy (OPA, Rego v1)
 ### The real copy lives in the private c3g-opa-policies repo, folder c3g_cbioportal/
-### (bundle: opa build -b c3g_cbioportal/ -o c3g_cbioportal-bundle.tar.gz).
-### This copy + data.json (placeholder groups only) are for local development:
-###   opa run --server --watch opa/c3g_cbioportal/
-###   opa test opa/c3g_cbioportal/ -v
+### This copy + data.json (placeholder groups only) are for local development.
+### Load the PARENT folder, never this one: OPA puts data.json under the path of its
+### folder (c3g_cbioportal/data.json -> data.c3g_cbioportal), same as a bundle built
+### from the c3g-opa-policies repo root.
+###   opa run --server --watch -b opa/
+###   opa test opa/ -v
 ###
-### Data (data.json, under the "c3g_cbioportal" key):
+### Data (data.json, plain fields - NO outer "c3g_cbioportal" key, the folder gives it):
 ###   study_groups: {"<cancer_study_identifier>": ["<COmanage group>", ...]}
 ###   admin_groups: ["<COmanage group>", ...]   -> can see every LISTED study
 ### Group strings must match the COmanage `groups` claim exactly (ask the COmanage admin: short name or COU path).

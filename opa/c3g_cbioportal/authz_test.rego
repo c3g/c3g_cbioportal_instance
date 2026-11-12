@@ -1,4 +1,4 @@
-### opa test opa/c3g_cbioportal/ -v
+### opa test opa/ -v      (parent folder, so data.json loads as data.c3g_cbioportal)
 package c3g_cbioportal.authz_test
 
 import data.c3g_cbioportal.authz
@@ -45,6 +45,16 @@ test_other_action_denied if {
 	not authz.allow with input as {"action": "delete_study", "study": "study_a", "groups": ["group-a"]}
 		with data.c3g_cbioportal.study_groups as studies
 		with data.c3g_cbioportal.admin_groups as admins
+}
+
+# Uses data.json as OPA really loads it (no `with`). Fails if data.json is wrapped in an
+# extra "c3g_cbioportal" key, or if the folder is loaded on its own: in both cases every
+# study would come back with no groups (= hidden from everyone). Holds for real data too.
+test_data_json_layout if {
+	not data.c3g_cbioportal.c3g_cbioportal
+	count(data.c3g_cbioportal.study_groups) > 0
+	count(data.c3g_cbioportal.admin_groups) > 0
+	count(authz.study_access) == count(data.c3g_cbioportal.study_groups)
 }
 
 test_study_access_table if {

@@ -1,9 +1,7 @@
 {
-  "c3g_cbioportal": {
-    "admin_groups": ["c3g-cbioportal-admins"],
-    "study_groups": {
-      "example_study_one": ["c3g-cbioportal-example-a"],
-      "example_study_two": ["c3g-cbioportal-example-a", "c3g-cbioportal-example-b"]
-    }
+  "admin_groups": ["c3g-cbioportal-admins"],
+  "study_groups": {
+    "example_study_one": ["c3g-cbioportal-example-a"],
+    "example_study_two": ["c3g-cbioportal-example-a", "c3g-cbioportal-example-b"]
   }
 }

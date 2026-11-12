@@ -1,7 +1,9 @@
 # c3g_cbioportal_instance
-_Last Modified:_ 2026-11-11
+_Last Modified:_ 2026-11-12
 
 **Authors:** Gerardo Zapata
+
+> ⚠️ **AI-written.** This README and the code in this repo (`entrypoint.sh`, `Containerfile`, OPA policy, `run.sh`, `deploy/`) were written with an AI assistant (Claude, Anthropic). Check it against the code and test before relying on it, especially access control.
 
 Private [cBioPortal](https://www.cbioportal.org/) 7.1.2 for C3G client studies, in **one container**: webapp + ClickHouse + MongoDB + session-service, run by `entrypoint.sh`.
 Login: C3G COmanage (OIDC). Study access: decided by **OPA**, per COmanage group.
@@ -131,18 +133,19 @@ podman run -d --name cbio-test --stop-timeout=300 -e CBIO_AUTH=false \
 
 **Fail closed:** studies OPA does not list → group `C3G_OPA_DENY` (nobody). OPA down or bad answer → every study `C3G_OPA_DENY`. Never create that group in COmanage.
 
-`data.json` (real one in c3g-opa-policies; placeholder in [`opa/`](opa/c3g_cbioportal/data.json)):
+`c3g_cbioportal/data.json` (real one in c3g-opa-policies; placeholder in [`opa/`](opa/c3g_cbioportal/data.json)):
 
 ```json
-{ "c3g_cbioportal": {
-    "admin_groups": ["c3g-cbioportal-admins"],
-    "study_groups": { "<cancer_study_identifier>": ["c3g-cbioportal-<group>"] } } }
+{ "admin_groups": ["c3g-cbioportal-admins"],
+  "study_groups": { "<cancer_study_identifier>": ["c3g-cbioportal-<group>"] } }
 ```
+
+No outer `"c3g_cbioportal"` key: OPA files `data.json` under its folder name (`c3g_cbioportal/` → `data.c3g_cbioportal`). Wrapping it again, or loading the folder on its own, gives every study no groups → all hidden.
 
 - `admin_groups` see every listed study.
 - Group strings must match the token's `groups` claim exactly — **confirm format on first login**.
 - Real group/study names only in c3g-opa-policies, never in this repo.
-- Test the policy: `opa test opa/c3g_cbioportal/ -v`.
+- Test the policy from the **parent** folder: `opa test opa/ -v` (local server: `opa run --server --watch -b opa/`).
 - **Fallback** `CBIO_AUTHZ=meta_study` (tests without OPA): `groups:` in `meta_study.txt` decides. Not for the VM.
 
 **Onboard:** PI approves in writing → user enrols in COmanage → sysadmin adds to `c3g-cbioportal-<group>` + access register → user checks what they see.
@@ -257,7 +260,7 @@ Adapted from `<client_project>/6_cbioInstance.sh` (Narval) and [cbioportal-docke
 5. Logo shows.
 6. amd64 + arm64 build fits GitHub Actions (else drop `arm64`).
 7. Logout behaviour (CILogon session may persist).
-8. OPA `data.json` layout in c3g-opa-policies; `--bundle <URL>` vs remote-bundle config.
+8. OPA: the c3g-opa-policies bundle is built from its repo root, so `c3g_cbioportal/data.json` lands at `data.c3g_cbioportal` (assumed; compare `project_tracking/data.json`: no outer app key). `--bundle <URL>` vs remote-bundle config.
 9. `ALTER TABLE cancer_study UPDATE "groups"` works; no derived copy of `groups`.
 10. `DELETE /api/cache` refreshes the webapp (else it restarts after each change, ~2–3 min down).
 11. `C3G_OPA_DENY` studies hidden everywhere (study list, counts).
