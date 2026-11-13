@@ -1,5 +1,5 @@
 # c3g_cbioportal_instance
-_Last Modified:_ 2026-11-12
+_Last Modified:_ 2026-11-13
 
 **Authors:** Gerardo Zapata
 
@@ -245,7 +245,7 @@ Need maintainer sign-off before the first deploy.
 | `run.sh` | Exact `podman run` commands (OPA + portal) |
 | `deploy/*.service` | systemd user units (portal, OPA) |
 | `opa/c3g_cbioportal/` | Policy, tests, placeholder data |
-| `.github/workflows/publish-container.yml` | Template workflow (buildah amd64 + arm64 → ghcr.io) |
+| `.github/workflows/publish-container.yml` | Release workflow (docker build amd64 → ghcr.io; adapted from snv-benchmarking-dashboard) |
 
 Adapted from `<client_project>/6_cbioInstance.sh` (Narval) and [cbioportal-docker-compose](https://github.com/cBioPortal/cbioportal-docker-compose).
 
@@ -258,7 +258,7 @@ Adapted from `<client_project>/6_cbioInstance.sh` (Narval) and [cbioportal-docke
 3. Offline validation (`DumpPortalInfo` + `metaImport.py -p`).
 4. Clean ClickHouse after `systemctl --user stop`.
 5. Logo shows.
-6. amd64 + arm64 build fits GitHub Actions (else drop `arm64`).
+6. Release workflow builds + pushes amd64 to ghcr.io (arm64 dropped).
 7. Logout behaviour (CILogon session may persist).
 8. OPA: the c3g-opa-policies bundle is built from its repo root, so `c3g_cbioportal/data.json` lands at `data.c3g_cbioportal` (assumed; compare `project_tracking/data.json`: no outer app key). `--bundle <URL>` vs remote-bundle config.
 9. `ALTER TABLE cancer_study UPDATE "groups"` works; no derived copy of `groups`.

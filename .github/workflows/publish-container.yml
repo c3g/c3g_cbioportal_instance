@@ -1,15 +1,11 @@
-# Verbatim from https://github.com/c3g/web-app-template/blob/main/for-app-developers.md
+# Adapted from https://github.com/c3g/snv-benchmarking-dashboard/blob/main/.github/workflows/build.yml
+# Plain docker build + push, amd64 only (the C3G webapp VM is amd64): no QEMU/apt steps,
+# which broke once ubuntu-latest moved to Ubuntu 26 (apt exit code 100).
 name: Publish Container
 
 on:
   release:
     types: [published]
-
-env:
-  REGISTRY: ghcr.io
-  REGISTRY_USER: ${{ github.actor }}
-  REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
-  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   release:
@@ -17,41 +13,36 @@ jobs:
 
     # Sets the permissions granted to the `GITHUB_TOKEN` for the actions in this job.
     permissions:
-      contents: write
       packages: write
-      attestations: write
-      id-token: write
+      contents: read
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Setup Git
+        uses: actions/checkout@v5
+
+      - name: Login to GitHub Container Registry
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Set image tag
+        id: tag
         run: |
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git config user.name "github-actions[bot]"
-      # This can be ignored if you don't plan to build a container on multiple architectures
-      ##
-      - name: Update package lists
-        run: sudo apt-get update
-      - name: Install QEMU
-        run: sudo apt-get install --fix-missing qemu-user-static
-      ##
-      # There is an example with 2 architectures, amd64 and arm64. Adapt to your needs
-      - name: Build Container Image
-        uses: redhat-actions/buildah-build@v2
-        with:
-          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: latest ${{ github.event.release.tag_name }}
-          # Make sure to adapt the path to your Containerfile
-          containerfiles: ./Containerfile
-          archs: amd64,arm64
-      - name: Push to repo
-        uses: redhat-actions/push-to-registry@v2
-        with:
-          username: ${{ env.REGISTRY_USER }}
-          password: ${{ env.REGISTRY_PASSWORD }}
-          registry: ${{ env.REGISTRY }}
-          image: ${{ env.IMAGE_NAME }}
-          tags: latest ${{ github.event.release.tag_name }}
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            echo "tag=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=latest" >> $GITHUB_OUTPUT
+          fi
+
+      ## CHANGE HERE ## image name: must match run.sh and deploy/c3g-cbioportal.service
+      - name: Build and push image
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+        run: |
+          # Build with version tag
+          docker build --pull -f Containerfile -t ${IMAGE}:${{ steps.tag.outputs.tag }} .
+
+          # Push version tag
+          docker push ${IMAGE}:${{ steps.tag.outputs.tag }}
+
+          # Also tag as latest and push
+          docker tag ${IMAGE}:${{ steps.tag.outputs.tag }} ${IMAGE}:latest
+          docker push ${IMAGE}:latest
