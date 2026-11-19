@@ -336,7 +336,7 @@ ls "$D" | wc -l                                        # 84 expected
 | Volume | `/home/genome/cbioportal-volume` → `/data` (label `cbioportal`, local/block disk) |
 | Shared storage | `<shared>/snapshots` → `/snapshots:ro` on the host; whole `<shared>` on the Build VM — **ASK** the SD4H admins |
 | Build VM | Second VM: podman + ghcr.io login, ≥ 20 GB RAM, runs [`deploy/c3g-cbioportal-build.sh`](deploy/c3g-cbioportal-build.sh) on demand (no service, no ports) |
-| Auth | Tier 3b: in-app OIDC + OPA `c3g-cbioportal-opa` (`127.0.0.1:8181`) |
+| Auth | cBioPortal's in-app OIDC + OPA `c3g-cbioportal-opa` (`127.0.0.1:8181`); not template 3a/3b, see [Differences](#differences-from-the-web-app-template) |
 | OPA policy | `c3g_cbioportal/` in c3g-opa-policies; bundle URL **ASK** |
 | nginx | `proxy_pass http://172.16.8.75:<host_port>` + `location /reports/` → `<reports_host_port>` (8090) |
 | Ports | `8080` portal, `8090` PCGR report gatekeeper (checks access itself) |
@@ -356,6 +356,9 @@ Need maintainer sign-off before the first deploy.
 | 10 s stop timeout | `--stop-timeout=300` | Ordered shutdown, ClickHouse stops cleanly |
 | App in `/app` | cBioPortal stays in the base image's paths | Upstream image layout |
 | One VM per app | Build VM + Host VM, same image; DB snapshots handed over on shared storage | Imports (≤ 16 GB RAM, long) never run on the webapp VM; the host only serves |
+| Tier 3a (oauth2-proxy + `c3g-flask-opa`) | Not used | cBioPortal (Java) cannot read `X-Forwarded-Groups`. A Flask gateway would have to switch cBioPortal's login off, and then could not keep one PI's studies from another PI's users (study ids sit in request bodies; calls like "all samples" span studies) |
+| `c3g-flask-opa` / `c3g-oidc` | Not installed | No Flask code in the image, and no CLI. The recipe (fail-closed call to the app's OPA) is reimplemented in `entrypoint.sh` (`sync_access`), per the template's "Other languages" |
+| Workflow builds amd64 + arm64 (QEMU) | Template workflow, QEMU/apt steps dropped, amd64 only | The template allows it for one architecture; the webapp VM is amd64; the apt step broke on newer runners |
 
 ---
 
@@ -371,7 +374,7 @@ Need maintainer sign-off before the first deploy.
 | `run.sh` | Exact `podman run` commands (OPA + portal) |
 | `deploy/*.service` | systemd user units (portal, OPA) |
 | `opa/c3g_cbioportal/` | Policy, tests, placeholder data |
-| `.github/workflows/publish-container.yml` | Release workflow (docker build amd64 → ghcr.io; adapted from snv-benchmarking-dashboard) |
+| `.github/workflows/publish-container.yml` | Release workflow (template buildah, amd64 → ghcr.io) |
 
 Adapted from `<client_project>/6_cbioInstance.sh` (Narval) and [cbioportal-docker-compose](https://github.com/cBioPortal/cbioportal-docker-compose).
 
@@ -384,7 +387,7 @@ Adapted from `<client_project>/6_cbioInstance.sh` (Narval) and [cbioportal-docke
 3. Offline validation (`DumpPortalInfo` + `metaImport.py -p`).
 4. Clean ClickHouse after `systemctl --user stop`.
 5. Logo shows.
-6. Release workflow builds + pushes amd64 to ghcr.io (arm64 dropped).
+6. Template buildah workflow builds + pushes amd64 to ghcr.io; `HEALTHCHECK` present in the pushed image (`podman inspect`).
 7. Logout behaviour (CILogon session may persist).
 8. OPA: the c3g-opa-policies bundle is built from its repo root, so `c3g_cbioportal/data.json` lands at `data.c3g_cbioportal` (assumed; compare `project_tracking/data.json`: no outer app key). `--bundle <URL>` vs remote-bundle config.
 9. `ALTER TABLE cancer_study UPDATE "groups"` works; no derived copy of `groups`.
