@@ -207,18 +207,33 @@ T=${TEST_DIR}
 mkdir -p ${T}/shared/{studies,reports,manifests,snapshots} && mkdir -p -m 700 ${T}/secrets
 ```
 
-**2. Image**: nothing to do. The job builds it from this clone's `Containerfile` (`BUILD_IMAGE=true`, the default), so it tests exactly the code you checked out. No ghcr login is needed.
+**2. Image**: built **off Cardinal** and copied there as a file. On Cardinal, `podman build` fails: there's only one user id for your account, so the MongoDB install can't `chown` to its `mongodb` user. There's no ghcr login there either. Loading a finished image works.
 
-- **When:** step 2/5 of every job (`podman build`, logged in the job output with the git commit). Each job builds again, because the podman storage is on the node's local disk. Rough guess: 15–30 min (not measured yet). The compute node needs internet (docker.io, repo.mongodb.org, Ubuntu apt).
-- **Code changes:** `git pull` in the clone, then submit. A clone with uncommitted changes is built too, labelled `<commit>+local-changes`.
-- **What differs from GitHub's build:** apt's sandbox user is turned off while the image is built, because Cardinal gives your account only one user id. The `Containerfile` is not changed and the setting does not end up in the image.
-- **Published image instead** (private ghcr image; GitHub token with `read:packages`):
+*On the Mac* (repo clone, podman machine running): build the latest release for amd64 and save it as a `.tar`.
 
-  ```bash
-  module load StdEnv/2023 podman/5.7.1
-  podman login ghcr.io --authfile ~/.config/containers/auth.json && chmod 600 ~/.config/containers/auth.json
-  # then at step 5: BUILD_IMAGE=false sbatch sd4h_slurm/c3g-cbioportal-slurm.sh test.txt
-  ```
+```bash
+cd /Path/to/YOUR/c3g_cbioportal_instance
+git fetch --tags
+./sd4h_slurm/build-image-archive.sh                     # newest v* release tag; or: ./sd4h_slurm/build-image-archive.sh v2.1.0
+# -> image_archives/c3g_cbioportal_instance_<release>_<commit>_amd64.tar (+ .sha256), git-ignored
+```
+
+- It builds exactly the release's code (`git archive <tag>` into a temp folder), with `--platform linux/amd64 --format docker`. Uncommitted changes and macOS `Icon` files never get in.
+- It stops if the result isn't amd64. It prints the cBioPortal version and whether the HEALTHCHECK is kept.
+- Emulated build: allow some time. The `.tar` is a few GB.
+- Rebuild only when a new release changes the image: `Containerfile`, `entrypoint.sh`, `reports_server.py`, `config/`, the logo. Changes to the Slurm script or the README need no new image.
+
+*Copy it to Cardinal:*
+
+```bash
+ssh <user>@cardinal.sd4h.ca "mkdir -p ${TEST_DIR}/image"      # TEST_DIR as in step 1 (or type the path)
+scp image_archives/c3g_cbioportal_instance_<release>_<commit>_amd64.tar{,.sha256} <user>@cardinal.sd4h.ca:/Path/to/YOUR/test_dir/image/
+```
+
+- At step 2/5 the job checks the `.sha256`, loads the newest `*_amd64.tar` in `${TEST_DIR}/image/`, and logs its release, commit and architecture. To pick another file, set `IMAGE_ARCHIVE=<file>` at step 5.
+- **Other sources, for later:**
+  - `IMAGE_SOURCE=build` builds on Cardinal from this clone. It needs a subuid range for your account (ask the SD4H admins).
+  - `IMAGE_SOURCE=pull IMAGE=ghcr.io/c3g/c3g_cbioportal_instance:<release>` needs `podman login ghcr.io --authfile ~/.config/containers/auth.json` with a classic token (`read:packages`, authorized for the c3g org).
 
 **3. Secrets.** Each template in `sd4h_slurm/secrets.example/` holds one commented, made-up example. Add the real value on a new line under it; `#` lines are ignored.
 
@@ -299,7 +314,7 @@ Expect one line per study, with an `id`, `groups` that include `C3G_ADMINS`, and
 ```bash
 cd ${T}/c3g_cbioportal_instance && mkdir -p job_outs
 sbatch sd4h_slurm/c3g-cbioportal-slurm.sh test.txt
-# BUILD_IMAGE=false sbatch sd4h_slurm/c3g-cbioportal-slurm.sh test.txt    # published ghcr image instead (step 2)
+# IMAGE_ARCHIVE=${T}/image/<file>.tar sbatch sd4h_slurm/c3g-cbioportal-slurm.sh test.txt   # a given image file (step 2)
 # CBIO_DB_SNAPSHOT=<id> sbatch sd4h_slurm/c3g-cbioportal-slurm.sh         # serve / roll back to an existing snapshot
 tail -f job_outs/cbio_sd4h_test_<jobid>.o                                # steps 1/5 ... 5/5
 ```
