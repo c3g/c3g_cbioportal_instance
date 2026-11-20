@@ -13,7 +13,7 @@
 ### manifests/ snapshots/), ClickHouse on local disk only.
 ###
 ###   1/5 podman setup   rootless podman 5.7.1 (module), storage + runtime on the node's local disk ($SLURM_TMPDIR)
-###   2/5 image          pull IMAGE from ghcr.io (private: authfile from `podman login`), or BUILD_IMAGE=true
+###   2/5 image          podman build of this clone's Containerfile (default), or BUILD_IMAGE=false: pull IMAGE from ghcr.io
 ###   3/5 Build VM       deploy/c3g-cbioportal-build.sh <manifest> -> <SHARED>/snapshots/<id>/ (skipped if CBIO_DB_SNAPSHOT set)
 ###   4/5 Host VM        podman run c3g-cbioportal (= run.sh), serves the snapshot; waits for "All services up"
 ###   5/5 serve          stays up until the job ends / scancel; healthcheck every 5 min; logs copied to <SHARED>/test_logs/
@@ -54,8 +54,8 @@ OIDC_CLIENT_SECRET_VALUE=$(value_of "${OIDC_SECRET_FILE}")    # never exported, 
 USERS_TSV=${USERS_TSV:-${SECRETS_DIR}/users.tsv}
 CBIO_AUTH=${CBIO_AUTH:-auto}                                  # auto = oauth2 when issuer + client id + secret are found | oauth2 | false
 CBIO_DB_SNAPSHOT=${CBIO_DB_SNAPSHOT:-}                        # set = skip the build, serve this existing snapshot
-IMAGE=${IMAGE:-ghcr.io/c3g/c3g_cbioportal_instance:latest}    ## CHANGE HERE ## same tag on Build and Host, as on the VMs
-BUILD_IMAGE=${BUILD_IMAGE:-false}                             # true = podman build this checkout's Containerfile instead of pulling
+BUILD_IMAGE=${BUILD_IMAGE:-true}                              # true = podman build this clone's Containerfile (tests the checked-out code)
+IMAGE=${IMAGE:-ghcr.io/c3g/c3g_cbioportal_instance:latest}    # BUILD_IMAGE=false only: image to pull (same tag on Build and Host, as on the VMs)
 HOST_PORT=${HOST_PORT:-28080}                                 # portal, on 127.0.0.1 of the node (VM: 8080)
 REPORTS_HOST_PORT=${REPORTS_HOST_PORT:-28090}                 # PCGR report server (VM: 8090)
 READY_TIMEOUT_MIN=${READY_TIMEOUT_MIN:-30}                    # host start (copy snapshot, migration, webapp)
@@ -180,9 +180,17 @@ echo "SELinux: $(getenforce 2>/dev/null || echo 'n/a')   (VM: shared storage is 
 ################################################################################
 if [ "${BUILD_IMAGE}" == "true" ]; then
   IMAGE=localhost/c3g_cbioportal_instance:sd4h_test
-  log "2/5 Image: podman build ${REPO_DIR}/Containerfile -> ${IMAGE}"
+  GIT_REV=$(git -C "${REPO_DIR}" rev-parse --short HEAD 2>/dev/null || echo unknown)
+  [ -z "$(git -C "${REPO_DIR}" status --porcelain --untracked-files=no 2>/dev/null)" ] || GIT_REV="${GIT_REV}+local-changes"
+  log "2/5 Image: podman build ${REPO_DIR}/Containerfile (git ${GIT_REV}) -> ${IMAGE}"
+  ## SLURM: single-uid user namespace -> apt cannot switch to its _apt sandbox user. This apt setting is mounted
+  ## only while the RUN steps run (-v), it is not in the image and the Containerfile is unchanged.
+  printf 'APT::Sandbox::User "root";\n' > "${WORK}/podman/99-sd4h-no-apt-sandbox"
   ## --format docker keeps the HEALTHCHECK (OCI format drops it), as the GitHub buildah workflow does
-  podman build --format docker -t "${IMAGE}" -f "${REPO_DIR}/Containerfile" "${REPO_DIR}" || die "podman build failed"
+  podman build --format docker \
+    -v "${WORK}/podman/99-sd4h-no-apt-sandbox":/etc/apt/apt.conf.d/99-sd4h-no-apt-sandbox:ro \
+    --label org.opencontainers.image.revision="${GIT_REV}" \
+    -t "${IMAGE}" -f "${REPO_DIR}/Containerfile" "${REPO_DIR}" || die "podman build failed (log above)"
 else
   log "2/5 Image: podman pull ${IMAGE}"
   if [[ "${IMAGE}" == ghcr.io/* ]] && [ ! -s "${REGISTRY_AUTH_FILE}" ]; then
@@ -293,12 +301,11 @@ done
 
 ### How to run: ###
 ## (same steps, with more detail: README "SD4H Slurm test")
-## 0. Once: the repo on Cardinal + shared layout + ghcr login
+## 0. Once: the repo on Cardinal + shared layout (image: built by the job from this clone)
 # (Cardinal) export TEST_DIR=/Path/to/YOUR/test_dir; T=${TEST_DIR}
 #            cd ${T} && git clone -b sd4h_test git@github.com:c3g/c3g_cbioportal_instance.git
 #            mkdir -p ${T}/shared/{studies,reports,manifests,snapshots} && mkdir -p -m 700 ${T}/secrets
-#            module load StdEnv/2023 podman/5.7.1 && podman login ghcr.io --authfile ~/.config/containers/auth.json
-#            chmod 600 ~/.config/containers/auth.json
+#            (only for BUILD_IMAGE=false) module load StdEnv/2023 podman/5.7.1 && podman login ghcr.io --authfile ~/.config/containers/auth.json
 ## 0b. Login (optional; without it the portal runs with no login). Callback on the COmanage client:
 #      http://localhost:28080/login/oauth2/code/cbio-idp
 # cp sd4h_slurm/secrets.example/* ${T}/secrets/ && chmod 600 ${T}/secrets/*      # templates: one '# example' line each
@@ -312,7 +319,7 @@ done
 ## 2. Submit from the repo root (build + serve)
 # cd ${T}/c3g_cbioportal_instance && mkdir -p job_outs
 # sbatch sd4h_slurm/c3g-cbioportal-slurm.sh test.txt
-# BUILD_IMAGE=true sbatch sd4h_slurm/c3g-cbioportal-slurm.sh test.txt            # image from this checkout instead of ghcr
+# BUILD_IMAGE=false sbatch sd4h_slurm/c3g-cbioportal-slurm.sh test.txt           # published ghcr image instead (podman login first)
 # CBIO_DB_SNAPSHOT=<id> sbatch sd4h_slurm/c3g-cbioportal-slurm.sh                # serve / roll back to an existing snapshot
 ## 3. Follow + tunnel (the exact tunnel command is in the log at step 5/5)
 # tail -f job_outs/cbio_sd4h_test_<jobid>.o

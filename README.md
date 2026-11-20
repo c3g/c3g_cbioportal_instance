@@ -207,12 +207,18 @@ T=${TEST_DIR}
 mkdir -p ${T}/shared/{studies,reports,manifests,snapshots} && mkdir -p -m 700 ${T}/secrets
 ```
 
-**2. Image access** (private ghcr image; GitHub token with `read:packages`). Skip it with `BUILD_IMAGE=true` at step 5.
+**2. Image**: nothing to do. The job builds it from this clone's `Containerfile` (`BUILD_IMAGE=true`, the default), so it tests exactly the code you checked out. No ghcr login is needed.
 
-```bash
-module load StdEnv/2023 podman/5.7.1
-podman login ghcr.io --authfile ~/.config/containers/auth.json && chmod 600 ~/.config/containers/auth.json
-```
+- **When:** step 2/5 of every job (`podman build`, logged in the job output with the git commit). Each job builds again, because the podman storage is on the node's local disk. Rough guess: 15–30 min (not measured yet). The compute node needs internet (docker.io, repo.mongodb.org, Ubuntu apt).
+- **Code changes:** `git pull` in the clone, then submit. A clone with uncommitted changes is built too, labelled `<commit>+local-changes`.
+- **What differs from GitHub's build:** apt's sandbox user is turned off while the image is built, because Cardinal gives your account only one user id. The `Containerfile` is not changed and the setting does not end up in the image.
+- **Published image instead** (private ghcr image; GitHub token with `read:packages`):
+
+  ```bash
+  module load StdEnv/2023 podman/5.7.1
+  podman login ghcr.io --authfile ~/.config/containers/auth.json && chmod 600 ~/.config/containers/auth.json
+  # then at step 5: BUILD_IMAGE=false sbatch sd4h_slurm/c3g-cbioportal-slurm.sh test.txt
+  ```
 
 **3. Secrets.** Each template in `sd4h_slurm/secrets.example/` holds one commented, made-up example. Add the real value on a new line under it; `#` lines are ignored.
 
@@ -293,7 +299,7 @@ Expect one line per study, with an `id`, `groups` that include `C3G_ADMINS`, and
 ```bash
 cd ${T}/c3g_cbioportal_instance && mkdir -p job_outs
 sbatch sd4h_slurm/c3g-cbioportal-slurm.sh test.txt
-# BUILD_IMAGE=true sbatch sd4h_slurm/c3g-cbioportal-slurm.sh test.txt     # image built from this checkout instead of ghcr
+# BUILD_IMAGE=false sbatch sd4h_slurm/c3g-cbioportal-slurm.sh test.txt    # published ghcr image instead (step 2)
 # CBIO_DB_SNAPSHOT=<id> sbatch sd4h_slurm/c3g-cbioportal-slurm.sh         # serve / roll back to an existing snapshot
 tail -f job_outs/cbio_sd4h_test_<jobid>.o                                # steps 1/5 ... 5/5
 ```
