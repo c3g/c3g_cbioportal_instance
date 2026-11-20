@@ -231,13 +231,61 @@ nano ${T}/secrets/users.tsv              # your CILogon email <TAB> name <TAB> C
 | `oidc_client_id` | client id | `cilogon:/client_id/7855a3979be3004da4ecdfcc6c7f5923` |
 | `users.tsv` | who can log in (TAB-separated) | `jane.doe@example.org  Jane Doe  C3G_ADMINS;PROJECT_X` |
 
-**4. Study, reports, manifest** (as on the Build VM). The study's `meta_study.txt` needs `groups:` with `C3G_ADMINS`.
+**4. Study, reports, manifest**: the Build VM's inputs. Only `shared/` is mounted in the container (read-only), so **copy** files in; don't symlink. A symlink to a folder outside `shared/` is broken inside the container.
+
+```
+${T}/shared/
+├── studies/<study_folder>/                          4a  the pipeline's cBioPortal study folder
+├── reports/<cancer_study_identifier>/*.html         4b  PCGR reports, flat, named after the samples
+└── manifests/test.txt                               4c  which study folders go into the snapshot
+```
+
+*4a. Study folder.* Copy the whole folder as the pipeline wrote it (`meta_study.txt`, `meta_*`/`data_*`, `case_lists/`).
 
 ```bash
-cp -r <study_folder> ${T}/shared/studies/
-mkdir -p ${T}/shared/reports/<cancer_study_identifier> && cp <...>.pcgr_acmg.grch38.flexdb.html ${T}/shared/reports/<cancer_study_identifier>/
-echo <study_folder> > ${T}/shared/manifests/test.txt
+cp -r <pipeline_output>/<study_folder> ${T}/shared/studies/
+grep -E '^(cancer_study_identifier|groups):' ${T}/shared/studies/<study_folder>/meta_study.txt
+#   cancer_study_identifier: <study_id>      letters, digits, _ . - only
+#   groups: <PROJECT>;C3G_ADMINS             one or more groups, separated by ;
 ```
+
+- **No `groups:` line:** the build stops. **No `C3G_ADMINS` in it:** the build warns, and people with only `C3G_ADMINS` won't see the study.
+- These lines come from the pipeline. If they're wrong, fix the pipeline and re-run it; don't edit `meta_study.txt` by hand.
+- The folder name and `cancer_study_identifier` can differ. The manifest uses the **folder name**, `reports/` uses the **`cancer_study_identifier`**.
+
+*4b. PCGR reports (optional).* One folder per study, named after its `cancer_study_identifier`. Files sit directly in it (no sub-folders) and are named `<SAMPLE_ID>` or `<PATIENT_ID>` + `.pcgr_acmg.grch38.flexdb.html`, matching the study's `data_clinical_sample.txt`.
+
+```bash
+SID=$(sed -n 's/^cancer_study_identifier:[[:space:]]*//p' ${T}/shared/studies/<study_folder>/meta_study.txt | tr -d '[:space:]')
+mkdir -p ${T}/shared/reports/${SID}
+find <pipeline_output> -name '*.pcgr_acmg.grch38.flexdb.html' -exec cp {} ${T}/shared/reports/${SID}/ \;
+ls ${T}/shared/reports/${SID} | head
+```
+
+- A report is linked to the sample whose `SAMPLE_ID` (or else `PATIENT_ID`) + suffix matches its file name. The build log lists samples without a report and reports that match no sample.
+- File names may only use letters, digits and `_ . -`. Other names, and symlinks, are skipped with a warning.
+- No `reports/<study_id>/` folder, or no match at all: the study is imported without report tabs, and the build goes on.
+- The study folder itself is never changed: the report links are added in a staging copy inside the build.
+
+*4c. Manifest.* One study **folder name** per line (not a path); `#` lines are comments. It's the full list of studies in the snapshot.
+
+```bash
+echo <study_folder> > ${T}/shared/manifests/test.txt
+cat ${T}/shared/manifests/test.txt
+```
+
+*4d. Check before submitting.* These are the build's first checks, so a typo fails here instead of after the job starts.
+
+```bash
+for f in $(grep -vE '^[[:space:]]*(#|$)' ${T}/shared/manifests/test.txt); do
+  m=${T}/shared/studies/${f}/meta_study.txt
+  [ -s "${m}" ] || { echo "MISSING ${m}"; continue; }
+  id=$(sed -n 's/^cancer_study_identifier:[[:space:]]*//p' "${m}" | tr -d '[:space:]')
+  echo "${f}: id=${id} groups=$(sed -n 's/^groups:[[:space:]]*//p' "${m}") reports=$(ls ${T}/shared/reports/${id}/*.pcgr_acmg.grch38.flexdb.html 2>/dev/null | wc -l)"
+done
+```
+
+Expect one line per study, with an `id`, `groups` that include `C3G_ADMINS`, and the number of reports you copied.
 
 **5. Submit** (from the repo root; build + serve in one job)
 
