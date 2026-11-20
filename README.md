@@ -249,6 +249,7 @@ grep -E '^(cancer_study_identifier|groups):' ${T}/shared/studies/<study_folder>/
 #   groups: <PROJECT>;C3G_ADMINS             one or more groups, separated by ;
 ```
 
+- **I GZ had to add this by hand - to test - CHECK_HERE**
 - **No `groups:` line:** the build stops. **No `C3G_ADMINS` in it:** the build warns, and people with only `C3G_ADMINS` won't see the study.
 - These lines come from the pipeline. If they're wrong, fix the pipeline and re-run it; don't edit `meta_study.txt` by hand.
 - The folder name and `cancer_study_identifier` can differ. The manifest uses the **folder name**, `reports/` uses the **`cancer_study_identifier`**.
