@@ -32,6 +32,7 @@
 ###     (rootless + cgroupfs cannot set limits; Slurm --mem is the cap), --no-healthcheck (no systemd timers;
 ###     the same /app/entrypoint.sh healthcheck is run by this script instead).
 ###   - No subuid range for the user on Cardinal: single-uid user namespace + ignore_chown_errors (storage.conf).
+###   - No pasta on Cardinal: slirp4netns for every container, `podman build` RUN steps included (containers.conf).
 ###   - The host volume (/data: local DB copy, MongoDB, logs) is on $SLURM_TMPDIR, deleted at the end of the job
 ###     (the VM keeps it). Snapshots on <SHARED> stay, so a later job can serve one with CBIO_DB_SNAPSHOT=<id>.
 ###   - Host ports 28080 / 28090 (+20000, as on Narval) instead of 8080 / 8090.
@@ -120,7 +121,7 @@ cleanup() {
   set +e
   log "Stopping ${CTR} (ordered, up to 300 s) and saving logs to ${LOGS_OUT}"
   podman stop --ignore -t 300 "${CTR}"
-  mkdir -p "${LOGS_OUT}"
+  mkdir -p -m 700 "${LOGS_OUT}"; chmod 700 "${LOGS_OUT}"     # logs can name samples: not for the whole group
   podman logs "${CTR}" > "${LOGS_OUT}/podman_logs_${CTR}.txt" 2>&1
   [ ! -d "${HOSTDATA}/logs" ] || cp -r "${HOSTDATA}/logs" "${LOGS_OUT}/host_logs"
   for b in "${SCRATCH_ROOT}"/build_*; do [ ! -d "${b}/logs" ] || cp -r "${b}/logs" "${LOGS_OUT}/$(basename "${b}")_logs"; done
@@ -162,6 +163,9 @@ log_driver = "k8s-file"
 cgroup_manager = "cgroupfs"
 events_logger = "file"
 image_copy_tmp_dir = "${WORK}/podman/tmp"
+[network]
+# podman 5 defaults to pasta, not installed on Cardinal: slirp4netns for podman build RUN steps too (run: = VM flag)
+default_rootless_network_cmd = "slirp4netns"
 EOF
 PODMAN_EXTRA_OPTS="--cgroups=disabled"
 
