@@ -21,3 +21,4 @@ application.properties
 *.tsv
 *.docx
 approvals/
+!sd4h_slurm/secrets.example/users.tsv

@@ -189,6 +189,74 @@ systemctl --user stop c3g-cbioportal.service             # ordered shutdown, Cli
 systemctl --user start c3g-cbioportal.service
 ```
 
+### SD4H Slurm test (Cardinal; branch `sd4h_test`)
+
+Runs both VM roles one after the other in one Slurm job, with the same image, rootless podman, `deploy/c3g-cbioportal-build.sh` and `run.sh` flags. Only the things a Slurm node forces are different (listed at the top of the script): `127.0.0.1` ports reached by an SSH tunnel, no systemd, host volume on the node's local disk.
+
+- **Login:** the same COmanage OIDC client, with the tunnel's callback `http://localhost:28080/login/oauth2/code/cbio-idp` registered on it. It is on when the issuer, client id and client secret are in `secrets/` (otherwise the job runs without login and says so).
+- **Test folder:** `/Path/to/YOUR/test_dir` = any throwaway folder on Cardinal's `/project`, passed to the job as `TEST_DIR`. It holds `shared/` (the VMs' shared storage) and `secrets/`.
+- **Secrets (temporary):** `/Path/to/YOUR/test_dir/secrets/` (chmod 700, files 600). The job refuses secrets that group or others can read.
+
+**1. Repo and folders** (Cardinal login node)
+
+```bash
+export TEST_DIR=/Path/to/YOUR/test_dir      # also read by the job (step 5)
+cd ${TEST_DIR}
+git clone -b sd4h_test git@github.com:c3g/c3g_cbioportal_instance.git     # or: git fetch && git switch sd4h_test
+T=${TEST_DIR}
+mkdir -p ${T}/shared/{studies,reports,manifests,snapshots} && mkdir -p -m 700 ${T}/secrets
+```
+
+**2. Image access** (private ghcr image; GitHub token with `read:packages`). Skip it with `BUILD_IMAGE=true` at step 5.
+
+```bash
+module load StdEnv/2023 podman/5.7.1
+podman login ghcr.io --authfile ~/.config/containers/auth.json && chmod 600 ~/.config/containers/auth.json
+```
+
+**3. Secrets.** Each template in `sd4h_slurm/secrets.example/` holds one commented, made-up example. Add the real value on a new line under it; `#` lines are ignored.
+
+```bash
+cp c3g_cbioportal_instance/sd4h_slurm/secrets.example/* ${T}/secrets/ && chmod 600 ${T}/secrets/*
+nano ${T}/secrets/oidc_client_secret     # COmanage client secret
+nano ${T}/secrets/oidc_issuer            # issuer URL
+nano ${T}/secrets/oidc_client_id         # client id
+nano ${T}/secrets/users.tsv              # your CILogon email <TAB> name <TAB> C3G_ADMINS
+```
+
+| File | Holds | Example line (made up) |
+|------|-------|------------------------|
+| `oidc_client_secret` | COmanage client secret | `cKKG4l-5U8WCUsOjs_bkkNXnlS9p7hUtYlG51ovik...` |
+| `oidc_issuer` | issuer URL | `https://idp.example.org/oidc` |
+| `oidc_client_id` | client id | `cilogon:/client_id/7855a3979be3004da4ecdfcc6c7f5923` |
+| `users.tsv` | who can log in (TAB-separated) | `jane.doe@example.org  Jane Doe  C3G_ADMINS;PROJECT_X` |
+
+**4. Study, reports, manifest** (as on the Build VM). The study's `meta_study.txt` needs `groups:` with `C3G_ADMINS`.
+
+```bash
+cp -r <study_folder> ${T}/shared/studies/
+mkdir -p ${T}/shared/reports/<cancer_study_identifier> && cp <...>.pcgr_acmg.grch38.flexdb.html ${T}/shared/reports/<cancer_study_identifier>/
+echo <study_folder> > ${T}/shared/manifests/test.txt
+```
+
+**5. Submit** (from the repo root; build + serve in one job)
+
+```bash
+cd ${T}/c3g_cbioportal_instance && mkdir -p job_outs
+sbatch sd4h_slurm/c3g-cbioportal-slurm.sh test.txt
+# BUILD_IMAGE=true sbatch sd4h_slurm/c3g-cbioportal-slurm.sh test.txt     # image built from this checkout instead of ghcr
+# CBIO_DB_SNAPSHOT=<id> sbatch sd4h_slurm/c3g-cbioportal-slurm.sh         # serve / roll back to an existing snapshot
+tail -f job_outs/cbio_sd4h_test_<jobid>.o                                # steps 1/5 ... 5/5
+```
+
+**6. Open it.** At step 5/5 the log prints the exact SSH tunnel command for your laptop (with the node name). Run it, then open `http://localhost:28080`. Use `localhost`, not `127.0.0.1`: the OIDC callback must match.
+
+**7. Stop cleanly** (ordered shutdown, logs copied to `${T}/shared/test_logs/<jobid>/`)
+
+```bash
+scancel --signal=TERM --batch <jobid>        # plain scancel kills it after 30 s
+```
+
 ### Local test (laptop, no login, never on the VMs)
 
 ```bash

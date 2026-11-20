@@ -19,7 +19,9 @@ MANIFEST=${1:?Usage: ./c3g-cbioportal-build.sh <manifest name in <shared>/manife
 SHARED=${SHARED:-/mnt/cbioportal-shared/cbioportal}          ## CHANGE HERE - ASK ## shared SD4H storage on this VM
 SCRATCH_ROOT=${SCRATCH_ROOT:-/home/genome/cbioportal-build}  ## CHANGE HERE ## LOCAL disk (not the shared storage)
 IMAGE=${IMAGE:-ghcr.io/c3g/c3g_cbioportal_instance:latest}   ## CHANGE HERE ## same tag as the Host VM
-MEMORY=${MEMORY:-18g}                                        # container cap: importer JVM (8 GB) + ClickHouse (8 GB) + slack
+MEMORY=${MEMORY-18g}                                         # container cap: importer JVM (8 GB) + ClickHouse (8 GB) + slack
+                                                             # MEMORY= (empty) -> no --memory (SD4H Slurm test: the job's --mem caps it)
+PODMAN_EXTRA_OPTS=${PODMAN_EXTRA_OPTS:-}                     # extra `podman run` flags; VM: none. SD4H Slurm test: --cgroups=disabled
 CBIO_IMPORT_JAVA_OPTS=${CBIO_IMPORT_JAVA_OPTS:--Xms2G -Xmx8G}
 CH_MAX_MEMORY=${CH_MAX_MEMORY:-8589934592}                   # bytes (8 GB)
 CBIO_REPORTS_URL=${CBIO_REPORTS_URL:-https://cbioportal.c3g-app.sd4h.ca/reports}   # written into the snapshot
@@ -43,12 +45,17 @@ cat "${SHARED}/manifests/${MANIFEST}"
 
 OPA_ARGS=()
 [ -z "${OPA_URL}" ] || OPA_ARGS=(-e OPA_URL="${OPA_URL}")
+MEMORY_ARGS=()
+[ -z "${MEMORY}" ] || MEMORY_ARGS=(--memory "${MEMORY}")
+EXTRA_ARGS=()
+[ -z "${PODMAN_EXTRA_OPTS}" ] || read -r -a EXTRA_ARGS <<< "${PODMAN_EXTRA_OPTS}"
 
 set +e
 podman run \
   --rm \
   --name "c3g-cbioportal-build-${SNAPSHOT_ID}" \
-  --memory "${MEMORY}" \
+  ${MEMORY_ARGS[@]+"${MEMORY_ARGS[@]}"} \
+  ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
   --stop-timeout=150 \
   -v "${SCRATCH}":/data:Z \
   -v "${SHARED}/studies":/studies:ro \
