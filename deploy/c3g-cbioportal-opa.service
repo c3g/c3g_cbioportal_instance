@@ -1,3 +1,5 @@
+# FUTURE - NOT deployed for now: study access uses cBioPortal's own users file (CBIO_AUTHZ=cbioportal, README
+# "Who can see what"). Kept for the switch to OPA (CBIO_AUTHZ=opa + COmanage groups).
 # systemd user unit for the app's own OPA container, from the web-app-template (for-maintainers.md, "OPA").
 # One OPA per app, pinned release, bound to 127.0.0.1 only; c3g-cbioportal reaches it at 10.0.2.2:8181.
 # It holds the study -> group decisions (policy c3g_cbioportal/authz from c3g-opa-policies).
