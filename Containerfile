@@ -1,7 +1,9 @@
 ################################################################################
 ### c3g_cbioportal_instance: all-in-one cBioPortal image
 ### cBioPortal webapp + ClickHouse server + MongoDB + session-service in ONE container,
-### started (and stopped, in order) by entrypoint.sh.
+### started (and stopped, in order) by entrypoint.sh, + reports_server.py (PCGR report tabs, same study access).
+### One image, two roles: `build <manifest>` on the Build VM (imports studies -> DB snapshot on shared storage),
+### `start` on the Host VM (serves a snapshot, never imports). README "Build VM" / "Host VM".
 ### Versions follow cbioportal-docker-compose for cBioPortal 7.1.2, except MongoDB
 ### (mongo 4.2 does not install on the base image's Ubuntu 24.04 "noble").
 ### Follows https://github.com/c3g/web-app-template: app in /app, data in /data, secrets as env vars.
@@ -21,8 +23,12 @@ FROM --platform=linux/amd64 docker.io/cbioportal/session-service:${SESSION_VERSI
 FROM docker.io/cbioportal/cbioportal:${CBIO_VERSION}
 LABEL maintainer="Gerardo Zapata gerardo.zapata@mcgill.ca"
 LABEL org.opencontainers.image.source="https://github.com/c3g/c3g_cbioportal_instance"
-LABEL org.opencontainers.image.description="All-in-one cBioPortal (webapp + ClickHouse + MongoDB + session-service) with OIDC login and OPA study access, for the C3G webapp VM"
+LABEL org.opencontainers.image.description="All-in-one cBioPortal (webapp + ClickHouse + MongoDB + session-service) with OIDC login, OPA study access and access-checked PCGR report tabs, for the C3G webapp VM"
 LABEL org.opencontainers.image.licenses="AGPL-3.0"
+
+## cBioPortal version recorded in every snapshot's BUILD_INFO.json; the host refuses a snapshot built with another one
+ARG CBIO_VERSION
+ENV CBIO_VERSION=${CBIO_VERSION}
 
 ## CHANGE HERE ## MongoDB major version (session-service database)
 ARG MONGO_VERSION=8.0
@@ -63,11 +69,13 @@ RUN found=0; \
     done; \
     [ "${found}" = 1 ] || echo "WARNING: no images/ folder under /cbioportal-webapp - header logo will not show"
 
-# 6. Launcher + data folder (/data = the app volume: studies/, DB, config, logs; CBIO_DATA_DIR to move it)
-COPY entrypoint.sh /app/entrypoint.sh
-RUN chmod 755 /app/entrypoint.sh && mkdir -p /data
+# 6. Launcher + report gatekeeper + data folder (/data = local disk: DB, config, logs; host also mongo/.
+#    Snapshots come from /snapshots (shared storage); build inputs from /studies and /reports)
+COPY entrypoint.sh reports_server.py /app/
+RUN chmod 755 /app/entrypoint.sh /app/reports_server.py && mkdir -p /data
 
-EXPOSE 8080
+# 8080 = cBioPortal, 8090 = PCGR report gatekeeper (reports_server.py, behind nginx /reports/)
+EXPOSE 8080 8090
 STOPSIGNAL SIGTERM
 HEALTHCHECK --interval=60s --timeout=30s --start-period=15m --retries=3 \
     CMD ["/app/entrypoint.sh", "healthcheck"]
