@@ -292,8 +292,13 @@ ls ${T}/shared/reports/${SID} | head
 *4c. Manifest.* One study **folder name** per line (not a path); `#` lines are comments. It's the full list of studies in the snapshot.
 
 ```bash
-echo <study_folder> > ${T}/shared/manifests/test.txt
+echo <study_folder> >> ${T}/shared/manifests/test.txt
 cat ${T}/shared/manifests/test.txt
+```
+
+** I CHANGED HERE **
+```bash
+echo <study_folder> >> ${T}/shared/manifests/test.txt
 ```
 
 *4d. Check before submitting.* These are the build's first checks, so a typo fails here instead of after the job starts.
