@@ -73,7 +73,10 @@ CBIO_FORWARD_HEADERS=${CBIO_FORWARD_HEADERS:-framework}   # trust nginx X-Forwar
 CBIO_NCBI_BUILD=${CBIO_NCBI_BUILD:-38}
 CBIO_UCSC_BUILD=${CBIO_UCSC_BUILD:-hg38}
 CBIO_SKIN_TITLE=${CBIO_SKIN_TITLE:-C3G cBioPortal}
-CBIO_RIGHT_LOGO=${CBIO_RIGHT_LOGO:-c3g_logo.svg}
+CBIO_RIGHT_LOGO=${CBIO_RIGHT_LOGO:-}                # header top-right logo (file in images/); empty = none
+## Home page centre (skin.blurb, HTML): C3G logo + name. Replaces cBioPortal's default MSK/TCGA text.
+CBIO_SKIN_BLURB_DEFAULT='<div style="text-align:center"><img src="images/c3g_logo.png" alt="C3G" style="height:140px"><p style="font-size:20px;font-weight:bold;margin-top:10px">C3G cBioPortal instance</p></div>'
+CBIO_SKIN_BLURB=${CBIO_SKIN_BLURB:-${CBIO_SKIN_BLURB_DEFAULT}}
 CBIO_JAVA_OPTS=${CBIO_JAVA_OPTS:--Xms2g -Xmx4g}
 CBIO_IMPORT_JAVA_OPTS=${CBIO_IMPORT_JAVA_OPTS:--Xms2G -Xmx8G}
 SESSION_JAVA_OPTS=${SESSION_JAVA_OPTS:--Xms256m -Xmx1g}
@@ -316,6 +319,7 @@ session.service.url=http://127.0.0.1:${SESSION_PORT}/api/sessions/my_portal/
 server.forward-headers-strategy=${CBIO_FORWARD_HEADERS}
 skin.title=${CBIO_SKIN_TITLE}
 skin.right_logo=${CBIO_RIGHT_LOGO}
+skin.blurb=${CBIO_SKIN_BLURB}
 authenticate=${CBIO_AUTH}
 ### /api/cache: lets import / access sync refresh the running webapp (key in ${CACHE_HEADER})
 cache.endpoint.enabled=true

@@ -61,13 +61,13 @@ COPY --from=session /app.war /app/session-service.war
 # 4. Static ClickHouse configs (password, ports and memory cap are read from the environment)
 COPY config/clickhouse-config.xml config/clickhouse-users.xml /app/config/
 
-# 5. C3G logo in the portal header (skin.right_logo=c3g_logo.svg, set by entrypoint.sh)
-COPY my_custom_logo.svg /app/my_custom_logo.svg
+# 5. C3G logo, centred on the home page (skin.blurb -> images/c3g_logo.png, set by entrypoint.sh)
+COPY c3g_logo.png /app/c3g_logo.png
 RUN found=0; \
     for d in $(find /cbioportal-webapp -type d -name images); do \
-        cp /app/my_custom_logo.svg "${d}/c3g_logo.svg"; echo "logo -> ${d}/c3g_logo.svg"; found=1; \
+        cp /app/c3g_logo.png "${d}/c3g_logo.png"; echo "logo -> ${d}/c3g_logo.png"; found=1; \
     done; \
-    [ "${found}" = 1 ] || echo "WARNING: no images/ folder under /cbioportal-webapp - header logo will not show"
+    [ "${found}" = 1 ] || echo "WARNING: no images/ folder under /cbioportal-webapp - home page logo will not show"
 
 # 6. Launcher + report gatekeeper + data folder (/data = local disk: DB, config, logs; host also mongo/.
 #    Snapshots come from /snapshots (shared storage); build inputs from /studies and /reports)
