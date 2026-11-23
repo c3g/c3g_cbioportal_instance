@@ -11,6 +11,8 @@
 ###             as a snapshot on the shared SD4H storage (/snapshots/<id>/). Never serves anything.
 ###   HOST VM   `start` copies the snapshot named by CBIO_DB_SNAPSHOT (read-only mount /snapshots) onto its local
 ###             /data/clickhouse and serves it. Never imports. ClickHouse never runs on the shared storage.
+###             CBIO_DB_SNAPSHOT=current: serve the snapshot named in /snapshots/CURRENT (moved by `promote`) and,
+###             at every CBIO_SYNC_TIMES (06:00 + 18:00), switch to it IN PLACE when it changed (no container restart).
 ###
 ### Subcommands:
 ###   build <manifest>  (Build VM, one-off `podman run --rm`) manifest = one study folder of /studies per line.
@@ -20,16 +22,21 @@
 ###                     "resources" (generated in a staging copy; the study folder is not changed) and copied in.
 ###   start             (Host VM, default CMD) activate CBIO_DB_SNAPSHOT, then start every service, webapp + report
 ###                     gatekeeper last. On SIGTERM (podman stop) stops reports -> webapp -> session -> mongod -> ClickHouse.
-###   snapshots         list the snapshots in /snapshots (READY, cBioPortal version, studies, which one is active)
+###                     At each CBIO_SYNC_TIMES: snapshot check (follow CURRENT) + access sync + cache refresh.
+###   promote <id> [--yes]  (Build VM, deploy/c3g-cbioportal-promote.sh; /snapshots read-write) show what changes
+###                     against /snapshots/CURRENT (studies added / removed, groups), ask, then write CURRENT.
+###                     The host switches at its next sync time (or `sync-now`). Rollback = promote the old id.
+###   snapshots         list the snapshots in /snapshots (READY, cBioPortal version, studies, CURRENT, active one)
+###   sync-now          (podman exec) run the scheduled sync now: switch to CURRENT if it changed + access
 ###   studies           list the studies in the DB with their access groups (podman exec)
 ###   users             list who can log in and their groups (podman exec)
-###   sync-access       re-apply the access now (podman exec; also runs every CBIO_SYNC_SECS)
+###   sync-access       re-apply the access now (podman exec; also runs at every CBIO_SYNC_TIMES)
 ###   healthcheck       exit 0 when every service answers (image HEALTHCHECK)
 ###
 ### Access:   authentication = cBioPortal's OIDC login (COmanage / CILogon), always.
 ###           CBIO_AUTHZ=cbioportal (default): cBioPortal's own authorization (authorization=true).
 ###             People:  /data/access/users.tsv on the host (email, name, groups) -> tables users + authorities in the
-###                      host's DB copy, at start / every CBIO_SYNC_SECS / sync-access. Not listed -> cannot log in.
+###                      host's DB copy, at start / CBIO_SYNC_TIMES / sync-access. Not listed -> cannot log in.
 ###             Studies: 'groups:' in meta_study.txt (pipeline, in the snapshot); must include CBIO_ADMIN_GROUP.
 ###             A person sees a study when one of their groups is in the study's groups (case-insensitive).
 ###           CBIO_AUTHZ=opa (FUTURE, dormant): token groups + OPA (c3g_cbioportal/authz, c3g-opa-policies) written
@@ -40,8 +47,10 @@
 ### Data:     /data (CBIO_DATA_DIR) = local disk, as in the C3G web-app-template. Must be /data in BOTH roles:
 ###           ClickHouse's internal symlinks are absolute (/data/clickhouse/store/...).
 ###             Host:  clickhouse/ (active snapshot copy, .snapshot_id), clickhouse.prev/, mongo/, config/, logs/
+###                    (logs/sync.log = every scheduled sync, logs/snapshot_switch.log = one line per switch)
 ###             Build: clickhouse/, config/ (staging/, importer JAR), logs/, portalinfo/  (scratch, one per build)
 ###           /snapshots (CBIO_SNAPSHOTS_DIR) = shared SD4H storage: builder writes, host mounts read-only.
+###             /snapshots/CURRENT = the snapshot id the host should serve (written only by `promote`; log: promote.log).
 ###           Build inputs (read-only): /studies/<folder>/ (pipeline output), /reports/<study_id>/ (PCGR HTML).
 ################################################################################
 set -euo pipefail
@@ -62,7 +71,9 @@ OIDC_ROLES_PATH=${OIDC_ROLES_PATH:-groups}
 CBIO_FILTER_GROUPS_BY_APPNAME=${CBIO_FILTER_GROUPS_BY_APPNAME:-false}
 CBIO_AUTHZ=${CBIO_AUTHZ:-cbioportal}               # cbioportal (users file + meta_study groups) | opa (FUTURE)
 CBIO_ADMIN_GROUP=${CBIO_ADMIN_GROUP:-C3G_ADMINS}   # cbioportal: on every study's 'groups:' line; admins carry it
-CBIO_SYNC_SECS=${CBIO_SYNC_SECS:-300}              # how often the access is re-applied (5 min)
+CBIO_SYNC_TIMES=${CBIO_SYNC_TIMES:-06:00 18:00}    # host: local times (TZ) of the scheduled sync: snapshot check
+                                                   # (CBIO_DB_SNAPSHOT=current) + access (users.tsv) + cache refresh
+CBIO_SYNC_SECS_OLD=${CBIO_SYNC_SECS:-}             # replaced by CBIO_SYNC_TIMES (an old unit still setting it gets a warning)
 ## FUTURE (CBIO_AUTHZ=opa) - kept dormant, see README "Who can see what"
 OPA_URL_FROM_ENV=${OPA_URL:-}                      # build: OPA is only asked (warning only) when OPA_URL is passed
 OPA_URL=${OPA_URL:-http://10.0.2.2:8181}           # the app's own OPA container (host loopback, slirp4netns)
@@ -102,7 +113,8 @@ CBIO_PORTAL_ORIGIN=${CBIO_PORTAL_ORIGIN:-}
 
 ## CHANGE HERE ## build / snapshot hand-off (README "Build VM" / "Host VM")
 SNAPSHOTS=${CBIO_SNAPSHOTS_DIR:-/snapshots}        # shared SD4H storage: builder writes, host mounts read-only
-CBIO_DB_SNAPSHOT=${CBIO_DB_SNAPSHOT:-}            # host: snapshot id to serve (= folder name in SNAPSHOTS)
+CBIO_DB_SNAPSHOT=${CBIO_DB_SNAPSHOT:-}            # host: 'current' = follow SNAPSHOTS/CURRENT (switch in place at
+                                                   # CBIO_SYNC_TIMES) | <id> = pinned to that snapshot (never switches)
 CBIO_SNAPSHOT_ID=${CBIO_SNAPSHOT_ID:-$(date '+%Y%m%d-%H%M%S')}   # build: id of the snapshot it publishes
 CBIO_IMAGE_REF=${CBIO_IMAGE_REF:-unknown}          # build: image tag, recorded in BUILD_INFO.json
 CBIO_VERSION=${CBIO_VERSION:-unknown}              # set by the Containerfile (ENV); build and host must match
@@ -131,7 +143,17 @@ SYNC_LOCK=${CONF}/.sync.lock                       # one import / access sync at
 ## Service pids (only known to the `start` process)
 CH_PID=""; MONGO_PID=""; SESSION_PID=""; WEB_PID=""; REPORTS_PID=""; SLEEP_PID=""
 IMPORT_DIR=""                                      # set by stage_reports: the folder metaImport.py reads
-SNAP=""                                            # host: /snapshots/<CBIO_DB_SNAPSHOT> (set by check_snapshot)
+SNAP=""                                            # host: /snapshots/<ACTIVE_ID> (set by check_snapshot / switch_snapshot)
+ACTIVE_ID=""                                       # host: the snapshot being served
+FOLLOW_CURRENT=0                                   # host: 1 = CBIO_DB_SNAPSHOT=current
+ACTIVATED_NEW=0                                    # host: 1 = start replaced /data/clickhouse (clickhouse.prev = before)
+SYNC_REQUESTED=0                                   # host: set by SIGUSR1 (sync-now)
+POINTER=${SNAPSHOTS}/CURRENT                       # the snapshot id the host should serve (written by promote)
+SYNC_LOG=${LOGS}/sync.log                          # host: output of every scheduled sync
+START_PID_FILE=${CONF}/.start.pid                  # host: pid of the `start` process (sync-now signals it)
+LAST_SYNC_FILE=${CONF}/.last_sync                  # host: time + result of the last scheduled sync
+NEXT_SYNC_FILE=${CONF}/.next_sync                  # host: time of the next scheduled sync
+FAILED_SWITCH_FILE=${CONF}/.failed_snapshot        # host: snapshot id whose switch failed (not retried: snapshots never change)
 study_id=""                                        # set by import_study
 IMPORTED_IDS=()                                    # build: cancer_study_identifier of every imported study
 STUDY_SUMMARY=${CONF}/build_studies.tsv            # build: <folder> TAB <study_id>, one line per imported study
@@ -251,17 +273,15 @@ check_auth() {
       done
       [ -z "${missing}" ] || die "login is required (CBIO_AUTH=oauth2) but these are not set:${missing}
        See README 'How to Run'. For a local test without login ONLY: -e CBIO_AUTH=false"
-      [[ "${CBIO_SYNC_SECS}" =~ ^[0-9]+$ ]] && [ "${CBIO_SYNC_SECS}" -ge 30 ] \
-        || die "CBIO_SYNC_SECS must be a number of seconds >= 30 (got '${CBIO_SYNC_SECS}')"
       case "${CBIO_AUTHZ}" in
         cbioportal)
           echo "Study access: cBioPortal's own authorization - people from ${ACCESS_FILE}, study groups from"
-          echo "meta_study.txt 'groups:' (admin group ${CBIO_ADMIN_GROUP}), re-applied every ${CBIO_SYNC_SECS} s"
+          echo "meta_study.txt 'groups:' (admin group ${CBIO_ADMIN_GROUP}), re-applied at ${CBIO_SYNC_TIMES} (+ sync-access)"
           [ -e "${ACCESS_FILE}" ] || echo "WARNING: ${ACCESS_FILE} does not exist - NOBODY can log in until it does (README 'Who can see what')"
           ;;
         opa)
           [ -n "${OPA_URL}" ] && [ -n "${OPA_POLICY_PATH}" ] || die "CBIO_AUTHZ=opa needs OPA_URL and OPA_POLICY_PATH"
-          echo "Study access decided by OPA (future mode): ${OPA_URL} (${OPA_POLICY_PATH}), re-applied every ${CBIO_SYNC_SECS} s"
+          echo "Study access decided by OPA (future mode): ${OPA_URL} (${OPA_POLICY_PATH}), re-applied at ${CBIO_SYNC_TIMES}"
           ;;
         *) die "CBIO_AUTHZ must be 'cbioportal' or 'opa' (got '${CBIO_AUTHZ}')" ;;
       esac
@@ -274,6 +294,39 @@ check_auth() {
       ;;
     *) die "CBIO_AUTH must be 'oauth2' or 'false' (got '${CBIO_AUTH}')" ;;
   esac
+}
+
+## check_schedule: host - CBIO_SYNC_TIMES = one or more HH:MM (local time of the container, TZ)
+check_schedule() {
+  local t
+  [ -n "${CBIO_SYNC_TIMES// /}" ] || die "CBIO_SYNC_TIMES is empty (expected e.g. '06:00 18:00')"
+  for t in ${CBIO_SYNC_TIMES}; do
+    [[ "${t}" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]] || die "CBIO_SYNC_TIMES: '${t}' is not HH:MM (24 h), e.g. '06:00 18:00'"
+  done
+  [ -z "${CBIO_SYNC_SECS_OLD}" ] \
+    || echo "WARNING: CBIO_SYNC_SECS=${CBIO_SYNC_SECS_OLD} is no longer used - syncs run at CBIO_SYNC_TIMES (${CBIO_SYNC_TIMES}). Remove it from the unit."
+  ## a zone name (America/Toronto) needs tzdata in the image; without it the clock silently stays UTC
+  if [ -n "${TZ:-}" ] && [[ "${TZ}" != *[0-9]* ]] && [ ! -e "/usr/share/zoneinfo/${TZ}" ]; then
+    echo "WARNING: TZ=${TZ} is not known in this image (/usr/share/zoneinfo) - sync times are read as UTC"
+  fi
+  echo "Scheduled sync (snapshot + access) at ${CBIO_SYNC_TIMES}, container time now $(date '+%Y-%m-%d %H:%M %Z')"
+}
+
+## next_sync: "<seconds until the next CBIO_SYNC_TIMES> <its local date-time>" (DST-safe: mktime per day)
+next_sync() {
+  python3 -I - "${CBIO_SYNC_TIMES}" <<'PYEOF'
+import sys, time
+now = time.time()
+best = None
+for day in range(0, 3):
+    t = time.localtime(now + day * 86400)
+    for hm in sys.argv[1].split():
+        h, m = (int(x) for x in hm.split(":"))
+        ts = time.mktime((t.tm_year, t.tm_mon, t.tm_mday, h, m, 0, 0, 0, -1))
+        if ts > now + 1 and (best is None or ts < best):
+            best = ts
+print(int(best - now) + 1, time.strftime("%Y-%m-%d %H:%M %Z", time.localtime(best)))
+PYEOF
 }
 
 check_reports() {   # report settings used by start (gatekeeper) and build (URLs written into the study)
@@ -714,7 +767,7 @@ report_refresh() {   # podman exec subcommands: try to refresh the running webap
   if clear_webapp_cache; then
     rm -f "${STALE_FLAG}"; echo "cBioPortal cache cleared - changes are live"
   else
-    echo "Cache endpoint did not answer: the running portal applies the changes within ${CBIO_SYNC_SECS} s (webapp restart)"
+    echo "Cache endpoint did not answer: the running portal applies the changes at the next scheduled sync ($(cat "${NEXT_SYNC_FILE}" 2>/dev/null || echo "${CBIO_SYNC_TIMES}"); webapp restart)"
   fi
 }
 
@@ -858,50 +911,198 @@ SAFE_ID_RE='^[A-Za-z0-9][A-Za-z0-9_.-]*$'
 ## would fail on NFS (root_squash) or across VMs with other uids.
 cp_db() { cp -dR --preserve=mode,timestamps "$1" "$2"; }
 
-## check_snapshot: host - CBIO_DB_SNAPSHOT must be a finished snapshot made by this cBioPortal version (sets SNAP, REPORTS)
-check_snapshot() {
-  local built_with link
-  [ -n "${CBIO_DB_SNAPSHOT}" ] || die "CBIO_DB_SNAPSHOT is not set. This container only serves snapshots made on the Build VM:
-       set -e CBIO_DB_SNAPSHOT=<id> (list them: podman run --rm -v <shared>/snapshots:/snapshots:ro <image> snapshots)"
-  [[ "${CBIO_DB_SNAPSHOT}" =~ ${SAFE_ID_RE} ]] && [[ "${CBIO_DB_SNAPSHOT}" != *.partial ]] \
-    || die "CBIO_DB_SNAPSHOT '${CBIO_DB_SNAPSHOT}' is not a snapshot id (letters, digits, _ . -; not *.partial)"
-  SNAP=${SNAPSHOTS}/${CBIO_DB_SNAPSHOT}
-  [ -d "${SNAP}" ] || die "snapshot ${SNAP} not found - is the shared snapshots folder mounted at ${SNAPSHOTS}?"
-  [ -e "${SNAP}/READY" ] || die "${SNAP} has no READY file - its build did not finish. Serve another snapshot."
-  [ -d "${SNAP}/clickhouse/metadata" ] && [ -s "${SNAP}/BUILD_INFO.json" ] || die "${SNAP} is incomplete (no clickhouse/metadata or BUILD_INFO.json)"
-  built_with=$(python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1])).get("cbio_version", ""))' "${SNAP}/BUILD_INFO.json") \
-    || die "${SNAP}/BUILD_INFO.json is not readable JSON"
-  [ "${built_with}" == "${CBIO_VERSION}" ] || die "snapshot ${CBIO_DB_SNAPSHOT} was built with cBioPortal '${built_with}', this image is '${CBIO_VERSION}'.
-       Rebuild it on the Build VM with the same image tag as the host."
+## validate_snapshot <id>: a finished snapshot made by this cBioPortal version, usable at this DATA path.
+## Never exits: prints why and returns 1 (the running host keeps serving; `start` / `promote` then die).
+validate_snapshot() {
+  local id=$1 snap built_with link
+  [[ "${id}" =~ ${SAFE_ID_RE} ]] && [[ "${id}" != *.partial ]] \
+    || { echo "'${id}' is not a snapshot id (letters, digits, _ . -; not *.partial)"; return 1; }
+  snap=${SNAPSHOTS}/${id}
+  [ -d "${snap}" ] || { echo "snapshot ${snap} not found - is the shared snapshots folder mounted at ${SNAPSHOTS}?"; return 1; }
+  [ -e "${snap}/READY" ] || { echo "${snap} has no READY file - its build did not finish"; return 1; }
+  [ -d "${snap}/clickhouse/metadata" ] && [ -s "${snap}/BUILD_INFO.json" ] \
+    || { echo "${snap} is incomplete (no clickhouse/metadata or BUILD_INFO.json)"; return 1; }
+  built_with=$(python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1])).get("cbio_version", ""))' "${snap}/BUILD_INFO.json") \
+    || { echo "${snap}/BUILD_INFO.json is not readable JSON"; return 1; }
+  [ "${built_with}" == "${CBIO_VERSION}" ] || { echo "snapshot ${id} was built with cBioPortal '${built_with}', this image is '${CBIO_VERSION}'.
+       Rebuild it on the Build VM with the same image tag as the host."; return 1; }
   ## ClickHouse's symlinks are absolute: the snapshot only works at the DATA path it was built at
-  link=$(readlink "${SNAP}/clickhouse/metadata/${CH_DB}" || true)
-  [[ "${link}" == "${DATA}/clickhouse/"* ]] || die "snapshot links point to '${link}', not ${DATA}/clickhouse/ -
-       build and host must use the same CBIO_DATA_DIR (default /data)"
-  REPORTS=${SNAP}/reports
-  echo "Snapshot ${CBIO_DB_SNAPSHOT}: built $(sed -n '1p' "${SNAP}/READY"), cBioPortal ${built_with}"
+  link=$(readlink "${snap}/clickhouse/metadata/${CH_DB}" || true)
+  [[ "${link}" == "${DATA}/clickhouse/"* ]] || { echo "snapshot links point to '${link}', not ${DATA}/clickhouse/ -
+       build and host must use the same CBIO_DATA_DIR (default /data)"; return 1; }
+  echo "Snapshot ${id}: built $(sed -n '1p' "${snap}/READY"), cBioPortal ${built_with}"
 }
 
-## activate_snapshot: host - make /data/clickhouse a copy of SNAP (kept as is when it already is that snapshot)
+## read_current: print the id in SNAPSHOTS/CURRENT (first non-empty line); fail when missing or not an id
+read_current() {
+  local id
+  [ -s "${POINTER}" ] || return 1
+  id=$(grep -m 1 -v '^[[:space:]]*$' "${POINTER}" | tr -d '[:space:]')
+  [[ "${id}" =~ ${SAFE_ID_RE} ]] || return 1
+  echo "${id}"
+}
+
+## check_snapshot: start - decide what to serve (sets ACTIVE_ID, SNAP, REPORTS, FOLLOW_CURRENT).
+##   <id>     pinned: must be valid, else no start.
+##   current  the id in CURRENT; when CURRENT is missing or not usable, keep serving the local copy
+##            already in /data/clickhouse (warning) - only with no local copy at all the host cannot start.
+check_snapshot() {
+  local id msg local_id
+  [ -n "${CBIO_DB_SNAPSHOT}" ] || die "CBIO_DB_SNAPSHOT is not set. This container only serves snapshots made on the Build VM:
+       -e CBIO_DB_SNAPSHOT=current (follow ${POINTER}, moved by promote) or -e CBIO_DB_SNAPSHOT=<id> (pinned)"
+  if [ "${CBIO_DB_SNAPSHOT,,}" != "current" ]; then
+    msg=$(validate_snapshot "${CBIO_DB_SNAPSHOT}") || die "${msg}"
+    echo "${msg} (pinned: CBIO_DB_SNAPSHOT=${CBIO_DB_SNAPSHOT}, CURRENT is not followed)"
+    ACTIVE_ID=${CBIO_DB_SNAPSHOT}
+  else
+    FOLLOW_CURRENT=1
+    if id=$(read_current) && [ "${id}" == "$(cat "${FAILED_SWITCH_FILE}" 2>/dev/null || true)" ]; then
+      msg="CURRENT=${id} failed to come up before (${LOGS}/snapshot_switch.log) - not retried"
+      id=""; local failed=1
+    fi
+    if [ -z "${failed:-}" ] && [ -n "${id:-}" ] && msg=$(validate_snapshot "${id}"); then
+      echo "${msg} (= ${POINTER})"
+      ACTIVE_ID=${id}
+    else
+      if [ -n "${failed:-}" ]; then :
+      elif [ -n "${id:-}" ]; then msg="CURRENT=${id}: ${msg}"
+      else msg="${POINTER} missing or empty - run promote on the Build VM"; fi
+      local_id=$(cat "${DATA}/clickhouse/.snapshot_id" 2>/dev/null || true)
+      [ -n "${local_id}" ] && [ -d "${DATA}/clickhouse/metadata" ] || die "${msg}
+       and there is no local copy to serve yet (${DATA}/clickhouse). Promote a snapshot, then start again."
+      echo "WARNING: ${msg}"
+      echo "WARNING: serving the local copy of snapshot ${local_id} until CURRENT is usable (checked at ${CBIO_SYNC_TIMES})"
+      ACTIVE_ID=${local_id}
+    fi
+  fi
+  SNAP=${SNAPSHOTS}/${ACTIVE_ID}
+  set_reports_dir
+}
+
+## set_reports_dir: the served snapshot's reports/ (an empty local folder when that snapshot is gone from SNAPSHOTS)
+set_reports_dir() {
+  if [ -d "${SNAP}/reports" ]; then
+    REPORTS=${SNAP}/reports
+  else
+    REPORTS=${DATA}/reports_missing; mkdir -p "${REPORTS}"
+    echo "WARNING: ${SNAP}/reports not found - PCGR report tabs will answer 404"
+  fi
+}
+
+## copy_snapshot <id> <dst>: copy a snapshot's stopped DB to a local folder, labelled with its id
+copy_snapshot() {
+  rm -rf "$2"
+  cp_db "${SNAPSHOTS}/$1/clickhouse" "$2" || { rm -rf "$2"; return 1; }
+  rm -f "$2/status"                                       # the builder's server status file
+  echo "$1" > "$2/.snapshot_id"
+}
+
+## activate_snapshot: start (ClickHouse not running) - make /data/clickhouse a copy of ACTIVE_ID (kept when it already is)
 activate_snapshot() {
   local cur=""
   cur=$(cat "${DATA}/clickhouse/.snapshot_id" 2>/dev/null || true)
-  if [ "${cur}" == "${CBIO_DB_SNAPSHOT}" ]; then
-    echo "Snapshot ${CBIO_DB_SNAPSHOT} already active (${DATA}/clickhouse) - kept"; return 0
+  if [ "${cur}" == "${ACTIVE_ID}" ]; then
+    echo "Snapshot ${ACTIVE_ID} already active (${DATA}/clickhouse) - kept"; return 0
   fi
-  echo "Activating snapshot ${CBIO_DB_SNAPSHOT} (active before: ${cur:-none})"
-  rm -rf "${DATA}/clickhouse.new"
-  cp_db "${SNAP}/clickhouse" "${DATA}/clickhouse.new"
-  rm -f "${DATA}/clickhouse.new/status"                    # the builder's server status file
-  echo "${CBIO_DB_SNAPSHOT}" > "${DATA}/clickhouse.new/.snapshot_id"
+  echo "Activating snapshot ${ACTIVE_ID} (active before: ${cur:-none})"
+  copy_snapshot "${ACTIVE_ID}" "${DATA}/clickhouse.new" || die "copy of ${SNAP}/clickhouse failed"
   if [ -n "$(ls -A "${DATA}/clickhouse" 2>/dev/null)" ]; then
-    rm -rf "${DATA}/clickhouse.prev"                        # only the last one is kept (rollback = old snapshot id)
+    rm -rf "${DATA}/clickhouse.prev"                        # only the last one is kept (rollback = promote the old id)
     mv "${DATA}/clickhouse" "${DATA}/clickhouse.prev"
     echo "Previous DB kept in ${DATA}/clickhouse.prev (${cur:-not from a snapshot})"
   else
     rm -rf "${DATA}/clickhouse"
   fi
   mv "${DATA}/clickhouse.new" "${DATA}/clickhouse"
-  echo "Active: ${CBIO_DB_SNAPSHOT} ($(du -sh "${DATA}/clickhouse" | cut -f 1))"
+  ACTIVATED_NEW=1
+  echo "Active: ${ACTIVE_ID} ($(du -sh "${DATA}/clickhouse" | cut -f 1))"
+  echo "$(date '+%Y-%m-%d %H:%M:%S') start: ${cur:-none} -> ${ACTIVE_ID}" >> "${LOGS}/snapshot_switch.log"
+}
+
+## ch_ready: ClickHouse answers and has seed data (= check_seed without exiting)
+ch_ready() {
+  local n
+  n=$(ch_client --query "SELECT COUNT(*) FROM ${CH_DB}.type_of_cancer" 2>/dev/null || echo 0)
+  [ "${n}" -gt 0 ] 2>/dev/null
+}
+
+## switch_snapshot <id>: start process only - serve another snapshot WITHOUT restarting the container.
+## The copy is made while the old DB still serves; then only ClickHouse stops (~10-20 s of page errors), the
+## folders are swapped, ClickHouse starts again. Webapp, MongoDB, session-service and logins keep running.
+## Any failure after the swap -> the previous DB is put back and served again. Returns 1 when not switched.
+switch_snapshot() {
+  local id=$1 msg from=${ACTIVE_ID} t_copy t_down t_up rc=0
+  if ! msg=$(validate_snapshot "${id}"); then
+    echo "WARNING: CURRENT=${id} not usable - still serving ${from}: ${msg}"; return 1
+  fi
+  exec 8> "${SYNC_LOCK}"
+  flock -w 600 8 || { echo "ERROR: sync lock busy for 600 s - snapshot not switched (next sync retries)"; exec 8>&-; return 1; }
+
+  log "Switch snapshot ${from} -> ${id}"
+  echo "${msg}"
+  t_copy=$(date +%s)
+  if ! copy_snapshot "${id}" "${DATA}/clickhouse.new"; then
+    echo "ERROR: copy of ${SNAPSHOTS}/${id}/clickhouse failed - still serving ${from}"; exec 8>&-; return 1
+  fi
+  echo "Copied ${id} ($(du -sh "${DATA}/clickhouse.new" | cut -f 1), $(( $(date +%s) - t_copy )) s) while ${from} was serving"
+
+  t_down=$(date +%s)
+  stop_service "${CH_PID}" "ClickHouse" 120; CH_PID=""
+  rm -rf "${DATA}/clickhouse.prev"
+  mv "${DATA}/clickhouse" "${DATA}/clickhouse.prev"
+  mv "${DATA}/clickhouse.new" "${DATA}/clickhouse"
+  ## services started while the lock (fd 8) is held must not inherit it, or they keep it locked: 8>&-
+  if start_clickhouse 8>&- && ch_ready && migrate_schema; then
+    t_up=$(date +%s)
+    ACTIVE_ID=${id}; SNAP=${SNAPSHOTS}/${id}
+    echo "ClickHouse back on ${id} after $(( t_up - t_down )) s"
+    ## the people are not in a snapshot: load users.tsv into the new copy (the lock is already held)
+    sync_access verbose || echo "WARNING: access not fully applied to ${id} (see above) - retried at the next sync"
+    touch "${STALE_FLAG}"                                   # refresh_webapp clears cBioPortal's cache
+    stop_service "${REPORTS_PID}" "report server" 10
+    set_reports_dir
+    start_reports 8>&- || echo "ERROR: report server did not start on ${REPORTS} - see ${LOGS}/reports_server.log"
+    echo "$(date '+%Y-%m-%d %H:%M:%S') switch: ${from} -> ${id} (DB down $(( t_up - t_down )) s)" >> "${LOGS}/snapshot_switch.log"
+  else
+    echo "ERROR: snapshot ${id} did not come up - putting ${from} back"
+    stop_service "${CH_PID}" "ClickHouse" 60; CH_PID=""
+    rm -rf "${DATA}/clickhouse.failed"
+    mv "${DATA}/clickhouse" "${DATA}/clickhouse.failed"
+    mv "${DATA}/clickhouse.prev" "${DATA}/clickhouse"
+    echo "Kept for inspection: ${DATA}/clickhouse.failed"
+    start_clickhouse 8>&- && ch_ready || { exec 8>&-; die "the previous DB (${from}) did not come back either - see ${LOGS}/"; }
+    echo "$(date '+%Y-%m-%d %H:%M:%S') switch FAILED: ${from} -> ${id}, back on ${from}" >> "${LOGS}/snapshot_switch.log"
+    echo "${id}" > "${FAILED_SWITCH_FILE}"
+    echo "${id} will not be tried again (snapshots never change): build a new one and promote it, or promote ${from}"
+    rc=1
+  fi
+  exec 8>&-
+  return "${rc}"
+}
+
+## scheduled_sync <reason>: start process only - what runs at each CBIO_SYNC_TIMES and on sync-now
+scheduled_sync() {
+  local id result=ok
+  log "Sync ($1, $(date '+%Y-%m-%d %H:%M %Z')): snapshot + access"
+  if [ "${FOLLOW_CURRENT}" -eq 1 ]; then
+    if ! id=$(read_current); then
+      echo "WARNING: ${POINTER} missing or not an id - still serving ${ACTIVE_ID}"; result=warning
+    elif [ "${id}" == "${ACTIVE_ID}" ]; then
+      echo "Snapshot: CURRENT = ${id} = served, nothing to switch"
+    elif [ "${id}" == "$(cat "${FAILED_SWITCH_FILE}" 2>/dev/null || true)" ]; then
+      echo "WARNING: CURRENT = ${id} failed to come up before (${LOGS}/snapshot_switch.log) - not retried, still serving ${ACTIVE_ID}."
+      echo "         Build a new snapshot and promote it, or promote ${ACTIVE_ID}."; result=warning
+    else
+      echo "Snapshot: CURRENT = ${id}, served = ${ACTIVE_ID} -> switching"
+      switch_snapshot "${id}" || result=error
+    fi
+  else
+    echo "Snapshot: pinned to ${ACTIVE_ID} (CBIO_DB_SNAPSHOT=${CBIO_DB_SNAPSHOT}), CURRENT not followed"
+  fi
+  locked_sync 600 || result=error
+  refresh_webapp || { echo "ERROR: webapp restart failed - see ${LOGS}/cbioportal.log"; result=error; }
+  echo "$(date '+%Y-%m-%d %H:%M:%S') ${result} (serving ${ACTIVE_ID})" > "${LAST_SYNC_FILE}"
+  echo "Sync done (${result}), serving ${ACTIVE_ID}"
 }
 
 ## publish_snapshot <manifest>: build - copy the stopped DB + reports + logs to SNAPSHOTS/<id>.partial, rename, READY last
@@ -932,7 +1133,7 @@ studies = []
 for line in open(studies_tsv, encoding="utf-8"):
     f = line.rstrip("\n").split("\t")
     if len(f) >= 3:
-        studies.append({"study_id": f[0], "name": f[1], "import_date": f[2]})
+        studies.append({"study_id": f[0], "name": f[1], "import_date": f[2], "groups": f[3] if len(f) >= 4 else ""})
 folders = {}
 for line in open(summary, encoding="utf-8"):
     f = line.rstrip("\n").split("\t")
@@ -956,10 +1157,10 @@ PYEOF
   echo "Snapshot ready: ${final} ($(du -sh "${final}" | cut -f 1))"
 }
 
-## ch_studies_tsv: studies in the DB -> CONF/studies.tsv (id, name, import date), DB info table -> CONF/db_info.json
+## ch_studies_tsv: studies in the DB -> CONF/studies.tsv (id, name, import date, groups), DB info table -> CONF/db_info.json
 ch_studies_tsv() {
   ch_client --database "${CH_DB}" --query \
-    "SELECT cancer_study_identifier, name, import_date FROM cancer_study ORDER BY cancer_study_identifier FORMAT TabSeparated" \
+    "SELECT cancer_study_identifier, name, import_date, ifNull(groups, '') FROM cancer_study ORDER BY cancer_study_identifier FORMAT TabSeparated" \
     > "${CONF}/studies.tsv"
   ch_client --database "${CH_DB}" --query "SELECT * FROM info FORMAT JSONEachRow" > "${CONF}/db_info.json" 2>/dev/null || true
   cat "${CONF}/studies.tsv"
@@ -985,9 +1186,10 @@ build_exit() {   # build: stop ClickHouse, say what is left
 do_start() {
   log "c3g_cbioportal_instance: start ($(date '+%Y-%m-%d %H:%M:%S'))"
   check_auth
+  check_schedule
+  prepare_dirs host
   check_snapshot
   check_reports
-  prepare_dirs host
   load_env
   write_client_config
   write_app_properties
@@ -996,34 +1198,63 @@ do_start() {
   trap 'shutdown $?' EXIT
   trap 'exit 0' TERM INT
 
-  log "1/7 Snapshot ${CBIO_DB_SNAPSHOT} (from ${SNAPSHOTS}, read-only)"; activate_snapshot
-  log "2/7 ClickHouse";      start_clickhouse; check_seed; migrate_schema
+  echo $$ > "${START_PID_FILE}"
+  trap 'SYNC_REQUESTED=1' USR1                            # sync-now (podman exec) asks for a sync
+
+  log "1/7 Snapshot ${ACTIVE_ID} (from ${SNAPSHOTS}, read-only)"; activate_snapshot
+  log "2/7 ClickHouse"
+  if ! { start_clickhouse && ch_ready; } && [ "${ACTIVATED_NEW}" -eq 1 ] && [ -d "${DATA}/clickhouse.prev/metadata" ]; then
+    ## the snapshot just copied in does not come up: put the previous local copy back, remember the id
+    echo "ERROR: snapshot ${ACTIVE_ID} did not come up - putting the previous local copy back"
+    stop_service "${CH_PID}" "ClickHouse" 60; CH_PID=""
+    rm -rf "${DATA}/clickhouse.failed"
+    mv "${DATA}/clickhouse" "${DATA}/clickhouse.failed"
+    mv "${DATA}/clickhouse.prev" "${DATA}/clickhouse"
+    echo "${ACTIVE_ID}" > "${FAILED_SWITCH_FILE}"
+    echo "$(date '+%Y-%m-%d %H:%M:%S') start FAILED on ${ACTIVE_ID}, back on $(cat "${DATA}/clickhouse/.snapshot_id" 2>/dev/null)" >> "${LOGS}/snapshot_switch.log"
+    ACTIVE_ID=$(cat "${DATA}/clickhouse/.snapshot_id" 2>/dev/null || echo unknown); SNAP=${SNAPSHOTS}/${ACTIVE_ID}
+    set_reports_dir
+    echo "Serving ${ACTIVE_ID} again; kept for inspection: ${DATA}/clickhouse.failed"
+    start_clickhouse || die "the previous local copy (${ACTIVE_ID}) did not come up either - see ${LOGS}/"
+  fi
+  check_seed; migrate_schema
   log "3/7 Study access (${AUTHZ})"
-  locked_sync 60 verbose || echo "WARNING: access not fully applied (see above) - retried every ${CBIO_SYNC_SECS} s"
+  locked_sync 60 verbose || echo "WARNING: access not fully applied (see above) - retried at ${CBIO_SYNC_TIMES}"
   rm -f "${STALE_FLAG}"      # the webapp is not up yet: it reads the current access when it starts
   log "4/7 MongoDB";         start_mongo
   log "5/7 session-service"; start_session
   log "6/7 cBioPortal webapp (port ${CBIO_PORT}, login: ${CBIO_AUTH}, access: ${AUTHZ})"; start_webapp
   log "7/7 Report server (port ${CBIO_REPORTS_PORT}, public URL ${CBIO_REPORTS_URL}, embedded by ${CBIO_PORTAL_ORIGIN})"; start_reports
-  log "All services up, serving snapshot ${CBIO_DB_SNAPSHOT}. Logs: ${LOGS}/
- New / updated studies: build a new snapshot on the Build VM, set CBIO_DB_SNAPSHOT, restart (README)."
+  local follow="pinned (CBIO_DB_SNAPSHOT=${CBIO_DB_SNAPSHOT})"
+  [ "${FOLLOW_CURRENT}" -eq 0 ] || follow="follows ${POINTER}"
+  log "All services up, serving snapshot ${ACTIVE_ID} (${follow}). Logs: ${LOGS}/
+ Scheduled sync at ${CBIO_SYNC_TIMES}: snapshot check + access (${ACCESS_FILE}) + cache. Now: sync-now / sync-access.
+ New / updated studies: build on the Build VM, then promote (README 'Add / update a study')."
 
-  ## Stay in the foreground. Every CBIO_SYNC_SECS: re-apply the access (users file or OPA) and refresh the webapp
-  ## if studies/access changed. If any service exits on its own, stop the others and exit 1
+  ## Stay in the foreground. At each CBIO_SYNC_TIMES (or on SIGUSR1 = sync-now): follow CURRENT (switch in place),
+  ## re-apply the access, refresh the webapp. If any service exits on its own, stop the others and exit 1
   ## (systemd / podman restart policy brings the container back).
-  local done_pid
+  local done_pid next secs reason
   while true; do
-    sleep "${CBIO_SYNC_SECS}" & SLEEP_PID=$!
+    read -r secs next < <(next_sync) || true
+    [[ "${secs:-}" =~ ^[0-9]+$ ]] || { secs=3600; next="unknown (next_sync failed - retry in 1 h)"; }
+    [ "${SYNC_REQUESTED}" -eq 0 ] || secs=0                 # sync-now arrived while busy: run it right away
+    echo "${next}" > "${NEXT_SYNC_FILE}"
+    sleep "${secs}" & SLEEP_PID=$!
     done_pid=""
     wait -n -p done_pid "${SLEEP_PID}" "${CH_PID}" "${MONGO_PID}" "${SESSION_PID}" "${WEB_PID}" "${REPORTS_PID}" || true
-    if [ "${done_pid}" != "${SLEEP_PID}" ]; then
+    if [ "${SYNC_REQUESTED}" -eq 1 ]; then
+      kill "${SLEEP_PID}" 2>/dev/null || true; wait "${SLEEP_PID}" 2>/dev/null || true
+      SYNC_REQUESTED=0; reason="sync-now"
+    elif [ "${done_pid}" != "${SLEEP_PID}" ]; then
       kill "${SLEEP_PID}" 2>/dev/null || true
       echo "ERROR: a service exited unexpectedly - see ${LOGS}/"
       exit 1
+    else
+      reason="scheduled ${next}"
     fi
     SLEEP_PID=""
-    locked_sync 0 || true
-    refresh_webapp || echo "ERROR: webapp restart failed - see ${LOGS}/cbioportal.log"
+    scheduled_sync "${reason}" > >(tee -a "${SYNC_LOG}") 2>&1 || echo "ERROR: sync failed - see ${SYNC_LOG}"
   done
 }
 
@@ -1150,22 +1381,31 @@ do_build() {
   publish_snapshot "$(basename "${manifest}")"
   trap - EXIT TERM INT
   log "Build done: ${SNAPSHOTS}/${CBIO_SNAPSHOT_ID}
- Host VM: set CBIO_DB_SNAPSHOT=${CBIO_SNAPSHOT_ID} in the unit, then restart (README 'Add / update a study').
+ Put it live: deploy/c3g-cbioportal-promote.sh ${CBIO_SNAPSHOT_ID} (shows what changes, asks, writes CURRENT);
+ the host switches at its next sync time or with sync-now (README 'Add / update a study').
  The scratch folder (${DATA} here) is no longer needed."
 }
 
-do_snapshots() {   # list SNAPSHOTS: id, READY, cBioPortal version, size, studies; * = active on this host
-  local active=""
+do_snapshots() {   # list SNAPSHOTS: id, READY, cBioPortal version, size, studies; * = active here, > = CURRENT
+  local active="" current=""
   active=$(cat "${DATA}/clickhouse/.snapshot_id" 2>/dev/null || true)
+  current=$(read_current || true)
   [ -d "${SNAPSHOTS}" ] || die "${SNAPSHOTS} not mounted"
-  log "Snapshots in ${SNAPSHOTS} (* = active here; this image: cBioPortal ${CBIO_VERSION})"
-  python3 -I - "${SNAPSHOTS}" "${active}" <<'PYEOF'
+  log "Snapshots in ${SNAPSHOTS} (this image: cBioPortal ${CBIO_VERSION})"
+  echo "  CURRENT (${POINTER}): ${current:-none}"
+  if [ -n "${active}" ]; then
+    echo "  Served here:  ${active}$([ "${active}" == "${current}" ] || echo "   (differs from CURRENT: switches at the next sync if this host follows CURRENT)")"
+    echo "  Last sync:    $(cat "${LAST_SYNC_FILE}" 2>/dev/null || echo none)"
+    echo "  Next sync:    $(cat "${NEXT_SYNC_FILE}" 2>/dev/null || echo unknown)   (CBIO_SYNC_TIMES=${CBIO_SYNC_TIMES})"
+  fi
+  echo
+  python3 -I - "${SNAPSHOTS}" "${active}" "${current}" <<'PYEOF'
 import json, os, sys
-root, active = sys.argv[1:3]
-print(f"  {'id':<24} {'ready':<6} {'cbio':<8} {'size':>8}  studies")
+root, active, current = sys.argv[1:4]
+print(f"   {'id':<24} {'ready':<6} {'cbio':<8} {'size':>8}  studies")
 for d in sorted(os.listdir(root)):
     p = os.path.join(root, d)
-    if not os.path.isdir(p):
+    if not os.path.isdir(p) or d.startswith("."):
         continue
     ready = "yes" if os.path.exists(os.path.join(p, "READY")) else "NO"
     try:
@@ -1175,9 +1415,117 @@ for d in sorted(os.listdir(root)):
     size = sum(os.path.getsize(os.path.join(r, f)) for r, _, fs in os.walk(p) for f in fs
                if not os.path.islink(os.path.join(r, f)))
     studies = ", ".join(s.get("study_id", "?") for s in info.get("studies", []))
-    mark = "*" if d == active else " "
+    mark = ("*" if d == active else " ") + (">" if d == current else " ")
     print(f"{mark} {d:<24} {ready:<6} {info.get('cbio_version', '?'):<8} {size / 1e6:>6.0f}MB  {studies}")
+print("\n   * = served by this host, > = CURRENT")
 PYEOF
+}
+
+## promote <id> [--yes]: Build VM - make <id> the snapshot the host serves (SNAPSHOTS/CURRENT).
+## Shows the change against CURRENT (studies added / removed, groups changed), asks, then writes CURRENT atomically.
+## Removing a study needs a typed 'yes' (or CBIO_ALLOW_REMOVE=true with --yes).
+do_promote() {
+  local id=${1:-} yes=${2:-} msg cur rc=0 ans tmp
+  [ -n "${id}" ] || die "Usage: /app/entrypoint.sh promote <snapshot id> [--yes]   (deploy/c3g-cbioportal-promote.sh <id>)"
+  [ -z "${yes}" ] || [ "${yes}" == "--yes" ] || die "unknown option '${yes}' (only --yes)"
+  [ -d "${SNAPSHOTS}" ] && [ -w "${SNAPSHOTS}" ] || die "${SNAPSHOTS} is not writable - promote runs on the Build VM
+       (deploy/c3g-cbioportal-promote.sh mounts <shared>/snapshots read-write; the host only reads it)"
+  msg=$(validate_snapshot "${id}") || die "${msg}"
+  cur=$(read_current || true)
+  log "Promote ${id} (CURRENT now: ${cur:-none})"
+  echo "${msg}"
+  if [ "${cur}" == "${id}" ]; then
+    echo "${id} is already CURRENT - nothing to do"; return 0
+  fi
+
+  echo
+  python3 -I - "${SNAPSHOTS}" "${cur}" "${id}" "${CBIO_ADMIN_GROUP}" <<'PYEOF' || rc=$?
+import json, os, sys
+root, cur, new, admin = sys.argv[1:5]
+
+def load(sid):
+    if not sid:
+        return {}
+    try:
+        info = json.load(open(os.path.join(root, sid, "BUILD_INFO.json")))
+    except (OSError, ValueError):
+        print(f"  NOTE: CURRENT={sid} has no readable BUILD_INFO.json - every study shows as added")
+        return {}
+    return {s["study_id"]: s for s in info.get("studies", []) if "study_id" in s}
+
+def reports(sid, study):
+    d = os.path.join(root, sid, "reports", study)
+    return len([f for f in os.listdir(d) if f.endswith(".html")]) if os.path.isdir(d) else 0
+
+old, nxt = load(cur), load(new)
+removed = sorted(set(old) - set(nxt))
+print(f"  {'study_id':<32} {'change':<10} {'groups':<40} reports")
+for sid in sorted(set(old) | set(nxt)):
+    o, n = old.get(sid), nxt.get(sid)
+    if n is None:
+        print(f"  {sid:<32} {'REMOVED':<10} {o.get('groups', '?') or '?':<40} -")
+        continue
+    g_new = n.get("groups", "?") or "?"            # snapshots built before groups were recorded show '?'
+    if o is None:
+        change, groups = "ADDED", g_new
+    elif "groups" in o and "groups" in n and o["groups"] != n["groups"]:   # older snapshots did not record groups
+        change, groups = "groups", f"{o.get('groups', '?') or '?'} -> {g_new}"
+    elif o.get("import_date") != n.get("import_date"):
+        change, groups = "rebuilt", g_new
+    else:
+        change, groups = "same", g_new
+    print(f"  {sid:<32} {change:<10} {groups:<40} {reports(new, sid)}")
+    if g_new != "?" and admin.upper() not in [g.strip().upper() for g in g_new.split(";")]:
+        print(f"      WARNING: {admin} is not in the groups of {sid} - admins will not see it")
+print(f"\n  {len(old)} -> {len(nxt)} studies ({len(set(nxt) - set(old))} added, {len(removed)} removed)")
+if removed:
+    print(f"\n  !!! {len(removed)} study(ies) would DISAPPEAR from the portal: {', '.join(removed)}")
+    print("  !!! (the manifest is the full list of studies - was a line left out?)")
+    sys.exit(10)
+PYEOF
+  [ "${rc}" -eq 0 ] || [ "${rc}" -eq 10 ] || die "could not compare ${id} with CURRENT (${cur:-none})"
+
+  echo
+  if [ "${yes}" == "--yes" ]; then
+    [ "${rc}" -ne 10 ] || [ "${CBIO_ALLOW_REMOVE:-false}" == "true" ] \
+      || die "studies would be REMOVED - not promoted with --yes. Run it in a terminal to confirm, or add CBIO_ALLOW_REMOVE=true"
+  elif [ -t 0 ]; then
+    if [ "${rc}" -eq 10 ]; then
+      read -r -p "Studies would DISAPPEAR. Type 'yes' to promote ${id} anyway: " ans || ans=""
+      [ "${ans}" == "yes" ] || { echo "Not promoted (CURRENT unchanged: ${cur:-none})"; exit 1; }
+    else
+      read -r -p "Promote ${id} (the host serves it from its next sync)? [y/N] " ans || ans=""
+      [[ "${ans}" =~ ^[Yy]([Ee][Ss])?$ ]] || { echo "Not promoted (CURRENT unchanged: ${cur:-none})"; exit 1; }
+    fi
+  else
+    die "no terminal to ask for confirmation - run deploy/c3g-cbioportal-promote.sh in a terminal, or pass --yes"
+  fi
+
+  tmp=$(mktemp "${SNAPSHOTS}/.CURRENT.XXXXXX")
+  echo "${id}" > "${tmp}"
+  chmod 644 "${tmp}"
+  mv -f "${tmp}" "${POINTER}"                               # atomic: the host never reads half a file
+  echo "$(date '+%Y-%m-%d %H:%M:%S') ${cur:-none} -> ${id} by ${CBIO_PROMOTED_BY:-unknown}" >> "${SNAPSHOTS}/promote.log"
+  log "CURRENT = ${id} (was ${cur:-none}). Logged in ${SNAPSHOTS}/promote.log
+ The host switches at its next sync (CBIO_SYNC_TIMES) or now: podman exec c3g-cbioportal /app/entrypoint.sh sync-now
+ Rollback: promote ${cur:-<previous id>} the same way."
+}
+
+## sync-now (podman exec): ask the running `start` process for its scheduled sync now, wait, print its output
+do_sync_now() {
+  local pid before size t=0
+  pid=$(cat "${START_PID_FILE}" 2>/dev/null || true)
+  { [ -n "${pid}" ] && kill -0 "${pid}" 2>/dev/null; } || die "no running portal in this container (start process not found) - podman ps"
+  before=$(cat "${LAST_SYNC_FILE}" 2>/dev/null || true)
+  size=$(stat -c %s "${SYNC_LOG}" 2>/dev/null || echo 0)
+  kill -USR1 "${pid}"
+  echo "Sync requested (start process ${pid}). Waiting for it to finish - a snapshot switch copies the DB first ..."
+  while [ "$(cat "${LAST_SYNC_FILE}" 2>/dev/null || true)" == "${before}" ]; do
+    sleep 5; t=$((t + 5))
+    [ "${t}" -lt 3600 ] || die "no result after 1 h - see ${SYNC_LOG} and podman logs c3g-cbioportal"
+  done
+  sleep 1
+  tail -c +$((size + 1)) "${SYNC_LOG}"
 }
 
 do_sync_access() {
@@ -1239,13 +1587,15 @@ case "${CMD}" in
   build)       do_build "${2:-}" ;;
   start)       do_start ;;
   snapshots)   do_snapshots ;;
+  promote)     do_promote "${2:-}" "${3:-}" ;;
+  sync-now)    do_sync_now ;;
   studies)     do_studies ;;
   users)       do_users ;;
   sync-access) do_sync_access ;;
   healthcheck) do_healthcheck ;;
   import)      die "the portal no longer imports: studies go into a snapshot made on the Build VM
        (deploy/c3g-cbioportal-build.sh -> /app/entrypoint.sh build <manifest>), README 'Add / update a study'" ;;
-  *)           echo "Usage: /app/entrypoint.sh {build /manifests/<name>.txt|start|snapshots|studies|users|sync-access|healthcheck}"; exit 1 ;;
+  *)           echo "Usage: /app/entrypoint.sh {build /manifests/<name>.txt|promote <id> [--yes]|start|snapshots|studies|users|sync-now|sync-access|healthcheck}"; exit 1 ;;
 esac
 
 
@@ -1256,14 +1606,15 @@ esac
 # mkdir -p <shared>/reports/<cancer_study_identifier> && cp <group>.pcgr_acmg.grch38.flexdb.html ... <shared>/reports/<cancer_study_identifier>/
 # echo <study_folder> >> <shared>/manifests/portal.txt        # every study the portal should serve
 # ./deploy/c3g-cbioportal-build.sh portal.txt                  # = podman run --rm ... build /manifests/portal.txt
-# --- Host VM (as user genome via `sudo machinectl shell genome@`)
+# ./deploy/c3g-cbioportal-promote.sh <id>                      # shows the change, asks, writes <shared>/snapshots/CURRENT
+# --- Host VM (as user genome via `sudo machinectl shell genome@`; unit: -e CBIO_DB_SNAPSHOT=current)
 # /home/genome/cbioportal-volume/access/users.tsv: email <TAB> name <TAB> group1;group2   (who can log in)
-# (set -e CBIO_DB_SNAPSHOT=<id> in c3g-cbioportal.service; systemctl --user daemon-reload)
-# systemctl --user restart c3g-cbioportal.service             # copies the snapshot to /data/clickhouse, serves it
+# (nothing to do after a promote: the host switches at 06:00 / 18:00 = CBIO_SYNC_TIMES, without a restart)
+# podman exec c3g-cbioportal /app/entrypoint.sh sync-now       # switch + access now instead of waiting
 # podman logs -f c3g-cbioportal
-# podman exec c3g-cbioportal /app/entrypoint.sh snapshots      # which snapshots exist, which one is active
+# podman exec c3g-cbioportal /app/entrypoint.sh snapshots      # which snapshots exist, CURRENT, which one is served
 # podman exec c3g-cbioportal /app/entrypoint.sh studies        # studies + their groups
 # podman exec c3g-cbioportal /app/entrypoint.sh users          # people + their groups
-# podman exec c3g-cbioportal /app/entrypoint.sh sync-access    # after editing users.tsv, instead of waiting 5 min
+# podman exec c3g-cbioportal /app/entrypoint.sh sync-access    # after editing users.tsv, instead of waiting for 06:00 / 18:00
 # podman healthcheck run c3g-cbioportal
 # systemctl --user stop c3g-cbioportal.service              # clean, ordered shutdown (--stop-timeout 300)

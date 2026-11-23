@@ -18,7 +18,9 @@ REPORTS_HOST_PORT=${REPORTS_HOST_PORT:-8090}   ## CHANGE HERE - ASK ## host port
                                                ## (nginx: location /reports/ -> this port, README "PCGR reports")
 VOLUME=${VOLUME:-/home/genome/cbioportal-volume}
 SHARED_SNAPSHOTS=${SHARED_SNAPSHOTS:?set SHARED_SNAPSHOTS (<shared>/snapshots on this VM)}   ## CHANGE HERE - ASK ##
-CBIO_DB_SNAPSHOT=${CBIO_DB_SNAPSHOT:?set CBIO_DB_SNAPSHOT (snapshot id made on the Build VM)} ## CHANGE HERE ##
+CBIO_DB_SNAPSHOT=${CBIO_DB_SNAPSHOT:-current}   # current = follow <shared>/snapshots/CURRENT (promote) | <id> = pinned
+CBIO_SYNC_TIMES=${CBIO_SYNC_TIMES:-06:00 18:00}   # scheduled sync: snapshot check + users.tsv (local time, TZ)
+TZ_HOST=${TZ_HOST:-America/Toronto}
 IMAGE=${IMAGE:-ghcr.io/c3g/c3g_cbioportal_instance:latest}
 
 ## The portal (who can log in: /data/access/users.tsv on the volume, README "Who can see what")
@@ -30,6 +32,8 @@ podman run \
   -v "${VOLUME}":/data:Z \
   -v "${SHARED_SNAPSHOTS}":/snapshots:ro \
   -e CBIO_DB_SNAPSHOT="${CBIO_DB_SNAPSHOT}" \
+  -e TZ="${TZ_HOST}" \
+  -e CBIO_SYNC_TIMES="${CBIO_SYNC_TIMES}" \
   --secret C3G_CBIOPORTAL_OIDC_CLIENT_SECRET,type=env,target=OIDC_CLIENT_SECRET \
   --secret C3G_CBIOPORTAL_CH_PASSWORD,type=env,target=CLICKHOUSE_PASSWORD \
   -e OIDC_ISSUER="${OIDC_ISSUER}" \
@@ -42,6 +46,7 @@ podman run \
 
 ### How to run: ###
 # OIDC_ISSUER=<issuer_url> OIDC_CLIENT_ID=<client_id> \
-#   SHARED_SNAPSHOTS=<shared>/snapshots CBIO_DB_SNAPSHOT=<snapshot_id> ./run.sh
+#   SHARED_SNAPSHOTS=<shared>/snapshots ./run.sh                  # serves CURRENT (promote on the Build VM)
+# podman exec c3g-cbioportal /app/entrypoint.sh sync-now          # switch to a newly promoted snapshot now
 # podman logs -f c3g-cbioportal
 # podman exec c3g-cbioportal /app/entrypoint.sh users      # who can log in

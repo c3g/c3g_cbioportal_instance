@@ -37,10 +37,12 @@ USER root
 WORKDIR /app
 
 # 1. MongoDB server from the official MongoDB apt repo for this Ubuntu release
-RUN apt-get update && apt-get install -y --no-install-recommends \
+#    + tzdata: the host's scheduled sync runs at local clock times (TZ=America/Toronto in the unit)
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
         gnupg \
+        tzdata \
     && curl -fsSL https://www.mongodb.org/static/pgp/server-${MONGO_VERSION}.asc \
         | gpg --dearmor -o /usr/share/keyrings/mongodb-server-${MONGO_VERSION}.gpg \
     && . /etc/os-release \

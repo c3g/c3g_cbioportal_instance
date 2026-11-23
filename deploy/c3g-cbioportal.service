@@ -6,7 +6,9 @@
 #    OPA is the FUTURE mode: then add -e CBIO_AUTHZ=opa -e OPA_URL=http://10.0.2.2:8181 + Wants/After c3g-cbioportal-opa.service)
 #   -p 8090:8090                              -> PCGR report gatekeeper, nginx location /reports/ (README "PCGR reports")
 #   -v <shared>/snapshots:/snapshots:ro       -> DB snapshots made on the Build VM (shared SD4H storage, read-only)
-#   -e CBIO_DB_SNAPSHOT                       -> the snapshot this host serves (change + restart = update / rollback)
+#   -e CBIO_DB_SNAPSHOT=current               -> serve <shared>/snapshots/CURRENT (moved by promote on the Build VM);
+#                                                switched in place at CBIO_SYNC_TIMES, no restart. <id> = pinned
+#   -e TZ, -e CBIO_SYNC_TIMES                 -> local times of the scheduled sync (snapshot check + users.tsv)
 # Install (as genome, via `sudo machinectl shell genome@`):
 #   cp c3g-cbioportal.service ~/.config/systemd/user/.
 #   systemctl --user enable --now c3g-cbioportal.service
@@ -14,7 +16,6 @@
 ## CHANGE HERE - ASK ## host port 8080 (-p 8080:8080): agree the host port with the maintainer
 ## CHANGE HERE - ASK ## host port 8090 (-p 8090:8090): report gatekeeper, agree it with the maintainer
 ## CHANGE HERE - ASK ## <shared_snapshots>: where the shared SD4H storage's cbioportal/snapshots is mounted on this VM
-## CHANGE HERE ## <snapshot_id>: from `podman exec c3g-cbioportal /app/entrypoint.sh snapshots` (README "Add / update a study")
 [Unit]
 Description=C3G cBioPortal (c3g_cbioportal_instance)
 Documentation=man:podman-generate-systemd(1)
@@ -41,7 +42,9 @@ ExecStart=/usr/bin/podman run \
 	--stop-timeout=300 \
 	-v /home/genome/cbioportal-volume:/data:Z \
 	-v <shared_snapshots>:/snapshots:ro \
-	-e CBIO_DB_SNAPSHOT=<snapshot_id> \
+	-e CBIO_DB_SNAPSHOT=current \
+	-e TZ=America/Toronto \
+	-e CBIO_SYNC_TIMES="06:00 18:00" \
 	--secret C3G_CBIOPORTAL_OIDC_CLIENT_SECRET,type=env,target=OIDC_CLIENT_SECRET \
 	--secret C3G_CBIOPORTAL_CH_PASSWORD,type=env,target=CLICKHOUSE_PASSWORD \
 	-e OIDC_ISSUER=<issuer_url> \

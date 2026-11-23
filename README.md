@@ -33,7 +33,8 @@ One image, two jobs, on two SD4H VMs. They share one storage folder:
 ├── studies/<study_folder>/                INPUT   study folders (pipeline output)
 ├── reports/<cancer_study_identifier>/     INPUT   PCGR reports (*.pcgr_acmg.grch38.flexdb.html)
 ├── manifests/portal.txt                   INPUT   one study folder per line = what the portal serves
-└── snapshots/<YYYYmmdd-HHMMSS>/           BUILDER OUTPUT   ready-to-serve database (+ reports, logs, READY)
+├── snapshots/<YYYYmmdd-HHMMSS>/           BUILDER OUTPUT   ready-to-serve database (+ reports, logs, READY)
+└── snapshots/CURRENT                      PROMOTE          the snapshot id the host should serve
 ```
 
 ### 1. Builder (Build VM): imports, never serves
@@ -47,19 +48,139 @@ SHARED=/Path/to/YOUR/cBioPortal ./deploy/c3g-cbioportal-build.sh portal.txt
 
 ### 2. Hosting (webapp VM): serves, never imports
 
-Serves one snapshot. It mounts the snapshots folder read-only, copies the chosen snapshot to its own disk, and serves that copy:
+Serves the snapshot named in `snapshots/CURRENT`. It mounts the snapshots folder read-only, copies that snapshot to its own disk, and serves the copy:
 
 ```bash
 podman run ... \
   -v /Path/to/YOUR/cBioPortal/HostData:/data:Z \
   -v /Path/to/YOUR/cBioPortal/snapshots:/snapshots:ro \
-  -e CBIO_DB_SNAPSHOT=20261120-143000 \
+  -e CBIO_DB_SNAPSHOT=current -e TZ=America/Toronto -e CBIO_SYNC_TIMES="06:00 18:00" \
   ghcr.io/c3g/c3g_cbioportal_instance:latest          # full command: deploy/c3g-cbioportal.service
 ```
 
-- **Add, update or remove a study:** edit the manifest → build → set the new `CBIO_DB_SNAPSHOT` → restart (~2–3 min down).
-- **Roll back:** set the previous snapshot id → restart.
-- Both VMs must run the **same image tag**. The host refuses a snapshot built with another cBioPortal version.
+- **Add, update or remove a study:** edit the manifest → build → **promote** (moves `CURRENT`, after showing what changes and asking). The host switches at its next sync (**06:00 or 18:00**), **without a restart**, or right away with `sync-now`.
+- **During a switch:** the new snapshot is copied while the old one still serves; then only ClickHouse restarts (~10–20 s of page errors). Logins, the webapp and saved sessions stay up. If the new database doesn't come up, the old one is put back.
+- **Roll back:** promote the previous snapshot id.
+- **A snapshot that doesn't come up** (at a switch or at start) is put aside as `/data/clickhouse.failed`, the previous copy keeps serving, and that id is not tried again. Build a new snapshot and promote it.
+- Both VMs must run the **same image tag**. The host and `promote` refuse a snapshot built with another cBioPortal version.
+
+<br/>
+
+---
+
+<br/>
+
+## Step by step
+
+`S=/Path/to/YOUR/cBioPortal` = the shared storage (layout in [How it works](#how-it-works)). Commands run from the repo root.
+
+### For updating: add, update or remove a study (Build VM)
+
+**1. Study folder.** Copy the pipeline's cBioPortal study folder as it is (no symlinks: only `studies/`, `reports/`, `manifests/` are mounted).
+
+```bash
+S=/Path/to/YOUR/cBioPortal
+cp -r <pipeline_output>/<study_folder> ${S}/studies/
+grep -E '^(cancer_study_identifier|groups):' ${S}/studies/<study_folder>/meta_study.txt
+#   cancer_study_identifier: <study_id>
+#   groups: <PROJECT>;C3G_ADMINS          set by the pipeline, never by hand
+```
+
+**2. PCGR reports (optional).** One flat folder per study, named after its `cancer_study_identifier`.
+
+```bash
+SID=$(sed -n 's/^cancer_study_identifier:[[:space:]]*//p' ${S}/studies/<study_folder>/meta_study.txt | tr -d '[:space:]')
+mkdir -p ${S}/reports/${SID}
+find <pipeline_output> -name '*.pcgr_acmg.grch38.flexdb.html' -exec cp {} ${S}/reports/${SID}/ \;
+```
+
+**3. Manifest.** The **full** list of study folders the portal serves, one per line.
+
+```bash
+echo <study_folder> >> ${S}/manifests/portal.txt
+cat ${S}/manifests/portal.txt
+```
+
+- Update a study: replace its folder. Remove one: delete its line.
+
+**4. Check before building** (a typo fails here, not after a long build).
+
+```bash
+for f in $(grep -vE '^[[:space:]]*(#|$)' ${S}/manifests/portal.txt); do
+  m=${S}/studies/${f}/meta_study.txt
+  [ -s "${m}" ] || { echo "MISSING ${m}"; continue; }
+  id=$(sed -n 's/^cancer_study_identifier:[[:space:]]*//p' "${m}" | tr -d '[:space:]')
+  echo "${f}: id=${id} groups=$(sed -n 's/^groups:[[:space:]]*//p' "${m}") reports=$(ls ${S}/reports/${id}/*.html 2>/dev/null | wc -l)"
+done
+```
+
+**5. Build** a new snapshot (full rebuild; ClickHouse on local scratch).
+
+```bash
+SHARED=${S} SCRATCH_ROOT=/Path/to/YOUR/BuilderScratch ./deploy/c3g-cbioportal-build.sh portal.txt
+# -> Snapshot ready: .../snapshots/<id>
+```
+
+**6. Promote** it: shows `ADDED` / `REMOVED` / `groups` changes against `CURRENT`, asks, writes `CURRENT`.
+
+```bash
+SHARED=${S} ./deploy/c3g-cbioportal-promote.sh <id>
+```
+
+**7. Live.** The host switches at **06:00 or 18:00**, without a restart. To switch now, on the host: `sync-now` (For hosting, step 5). Roll back: promote the previous id.
+
+**8. People.** Give the project's group to the people who should see it, in `users.tsv` on the host (For hosting, step 1).
+
+### For hosting: run the portal (webapp VM)
+
+**1. Volume and people.** Local disk, mounted as `/data`. `users.tsv` = who can log in ([Who can see what](#who-can-see-what)).
+
+```bash
+VOL=/Path/to/YOUR/HostData
+mkdir -p -m 700 ${VOL}/access
+nano ${VOL}/access/users.tsv          # email <TAB> name <TAB> <PROJECT>;C3G_ADMINS
+chmod 600 ${VOL}/access/users.tsv
+```
+
+**2. Secrets and image login.**
+
+```bash
+printf '%s' '<oidc_client_secret>' | podman secret create C3G_CBIOPORTAL_OIDC_CLIENT_SECRET -
+python3 -c 'import secrets; print(secrets.token_hex(16), end="")' | podman secret create C3G_CBIOPORTAL_CH_PASSWORD -
+podman login ghcr.io                  # classic token with read:packages, authorized for the c3g org
+```
+
+**3. Unit.** Fill the `<...>` placeholders: issuer URL, client ID, snapshots path, host ports. Keep `CBIO_DB_SNAPSHOT=current`.
+
+```bash
+cp deploy/c3g-cbioportal.service ~/.config/systemd/user/
+nano ~/.config/systemd/user/c3g-cbioportal.service
+```
+
+- `snapshots/CURRENT` must exist before the first start: do For updating steps 1–6 once.
+
+**4. Start.**
+
+```bash
+systemctl --user daemon-reload && systemctl --user enable --now c3g-cbioportal.service
+podman logs -f c3g-cbioportal                                # ready at "All services up, serving snapshot <id>"
+podman exec c3g-cbioportal /app/entrypoint.sh snapshots      # CURRENT, served, next sync
+```
+
+**5. Day to day** (no restarts needed).
+
+```bash
+podman exec c3g-cbioportal /app/entrypoint.sh sync-now       # take a promoted snapshot now (else 06:00 / 18:00)
+podman exec c3g-cbioportal /app/entrypoint.sh sync-access    # apply a users.tsv change now (always after removing someone)
+podman exec c3g-cbioportal /app/entrypoint.sh studies        # studies + their groups
+podman exec c3g-cbioportal /app/entrypoint.sh users          # people + their groups
+```
+
+**6. Stop cleanly** (ordered shutdown, ClickHouse last).
+
+```bash
+systemctl --user stop c3g-cbioportal.service
+```
 
 <br/>
 
@@ -86,8 +207,8 @@ At login:    email not in users.tsv            → login refused
 
 | To... | Do | Rebuild? |
 |-------|----|----------|
-| Let a person see a project | Add a line to `users.tsv` (or add the project's group to their line) | No. Applied within 5 min (or `sync-access`), effective at their next login |
-| Remove a person | Delete their line | No. They can't log in again (an open session lasts until it expires) |
+| Let a person see a project | Add a line to `users.tsv` (or add the project's group to their line) | No. Applied at 06:00 / 18:00 (or now with `sync-access`), effective at their next login |
+| Remove a person | Delete their line, then `sync-access` (otherwise it waits for 06:00 / 18:00) | No. They can't log in again (an open session lasts until it expires) |
 | Change which groups can see a study | Edit `groups:` in the study's `meta_study.txt` **in the pipeline** | Yes: build a new snapshot and switch |
 | Give C3G staff access to everything | Every study's `groups:` includes `C3G_ADMINS`; staff carry `C3G_ADMINS` in `users.tsv` | No (for people) |
 
@@ -97,7 +218,7 @@ At login:    email not in users.tsv            → login refused
 - **Missing file:** nobody can log in (fail closed).
 - **Invalid file:** nothing changes, and `sync-access` prints the line that's wrong.
 - **The build** refuses a study without a `groups:` line, and warns when `C3G_ADMINS` is missing from it.
-- **How it works inside:** `authorization=true`. At start (and every 5 min) the host loads `users.tsv` into cBioPortal's `users` and `authorities` tables in its local database copy. Because each snapshot starts empty, the people list is always re-applied from the host file.
+- **How it works inside:** `authorization=true`. At start, at each sync (06:00 and 18:00) and after every snapshot switch, the host loads `users.tsv` into cBioPortal's `users` and `authorities` tables in its local database copy. Because each snapshot starts empty, the people list is always re-applied from the host file.
 - cBioPortal also accepts the authority `ALL` (sees every study) as an alternative to `C3G_ADMINS`.
 - **Future: OPA.** The OPA setup (COmanage groups + the app's own OPA container + c3g-opa-policies) is still in the code and dormant: `CBIO_AUTHZ=opa`, `opa/`, `deploy/c3g-cbioportal-opa.service`. It isn't deployed for now.
 
@@ -124,6 +245,20 @@ IMAGE=ghcr.io/c3g/c3g_cbioportal_instance:latest \
 - Success: `snapshots/<id>/` with `READY` written last. Failure: only `<id>.partial/` is left, and the host refuses it.
 - Each study's `meta_study.txt` must have a `groups:` line (set by the pipeline). The build stops on a study without one and warns when `C3G_ADMINS` is missing.
 - Snapshots and scratch folders are never deleted automatically.
+- A new snapshot is **not** live until it is promoted (next section). `PROMOTE=true ./deploy/c3g-cbioportal-build.sh portal.txt` runs the promote right after a good build.
+
+### Put a snapshot live: promote (Build VM)
+
+```bash
+SHARED=/Path/to/YOUR/cBioPortal ./deploy/c3g-cbioportal-promote.sh 20261120-143000
+```
+
+- Checks the snapshot (READY, same cBioPortal version), then shows each study against the current `CURRENT`: `ADDED`, `REMOVED`, `groups` changed (old → new), `rebuilt`, `same`, with the number of PCGR reports. It warns when `C3G_ADMINS` is missing from a study's groups.
+- Asks `y/N`. If a study would **disappear** (a line left out of the manifest?), you have to type `yes`.
+- Writes `snapshots/CURRENT` in one step and adds a line to `snapshots/promote.log` (date, old → new id, who).
+- `--yes` skips the question (scripts); it refuses when a study would be removed unless `CBIO_ALLOW_REMOVE=true`.
+- **Roll back:** promote the previous id the same way.
+- It runs on the Build VM because only that VM can write to `snapshots/`.
 
 ### Start the portal (Host VM)
 
@@ -133,20 +268,23 @@ systemctl --user enable --now c3g-cbioportal.service
 podman logs -f c3g-cbioportal                               # ready at "All services up, serving snapshot <id>"
 ```
 
-- Before the first start, fill the `<...>` placeholders in the unit: issuer URL, client ID, ports, snapshots path, snapshot id. Then put the people list in `/home/genome/cbioportal-volume/access/users.tsv` ([Who can see what](#who-can-see-what)).
-- Startup order: copy the snapshot (if new) → ClickHouse → load `users.tsv` → MongoDB → session-service → webapp → report server.
-- It refuses to start without the OIDC settings, or without a snapshot that has `READY` and matches the image's cBioPortal version.
+- Before the first start, fill the `<...>` placeholders in the unit: issuer URL, client ID, ports, snapshots path. Promote a first snapshot on the Build VM (so `snapshots/CURRENT` exists). Then put the people list in `/home/genome/cbioportal-volume/access/users.tsv` ([Who can see what](#who-can-see-what)).
+- Startup order: copy the snapshot (if new) → ClickHouse → load `users.tsv` → MongoDB → session-service → webapp → report server. Then it waits for the next sync time.
+- It refuses to start without the OIDC settings. If `CURRENT` is missing or not usable (no `READY`, other cBioPortal version), it keeps serving its local copy and warns; it only refuses when it has no local copy yet.
+- `CBIO_DB_SNAPSHOT=<id>` instead of `current` **pins** the host to that snapshot: it never follows `CURRENT` (for debugging).
 - No `users.tsv` → the portal starts, but **nobody can log in** (fail closed).
 - The same command without systemd is in [`run.sh`](run.sh).
 
-### Switch or roll back the snapshot (Host VM)
+### Switch to the promoted snapshot now (Host VM)
 
 ```bash
-# in ~/.config/systemd/user/c3g-cbioportal.service:  -e CBIO_DB_SNAPSHOT=<new or previous id>
-systemctl --user daemon-reload && systemctl --user restart c3g-cbioportal.service
+podman exec c3g-cbioportal /app/entrypoint.sh sync-now
 ```
 
-The previous local copy is kept as `/data/clickhouse.prev/`. MongoDB (users' saved sessions and virtual studies) is not touched.
+- Runs the scheduled sync right away instead of waiting for 06:00 / 18:00: switch to `CURRENT` if it changed, reload `users.tsv`, clear cBioPortal's cache. Prints the result.
+- No restart: the previous local copy is kept as `/data/clickhouse.prev/`. MongoDB (users' saved sessions and virtual studies) is not touched.
+- Every sync is logged in `/data/logs/sync.log`, every switch in `/data/logs/snapshot_switch.log`.
+- Times: `CBIO_SYNC_TIMES` (default `06:00 18:00`) in the container's time zone (`TZ=America/Toronto` in the unit).
 
 ### List snapshots
 
@@ -154,7 +292,7 @@ The previous local copy is kept as `/data/clickhouse.prev/`. MongoDB (users' sav
 podman exec c3g-cbioportal /app/entrypoint.sh snapshots
 ```
 
-Shows each snapshot's id, READY, cBioPortal version, size and studies. `*` marks the one being served.
+Shows `CURRENT`, the snapshot served here, the last and next sync, then each snapshot's id, READY, cBioPortal version, size and studies. `*` marks the one being served, `>` the one in `CURRENT`.
 
 ### List studies and who can see them
 
@@ -179,7 +317,7 @@ nano /home/genome/cbioportal-volume/access/users.tsv              # email <TAB> 
 podman exec c3g-cbioportal /app/entrypoint.sh sync-access
 ```
 
-This checks the file, then swaps it into the `users` / `authorities` tables. Added, removed and changed people are printed, and an invalid line stops the update. The same sync also runs on its own every 5 min. Changes apply at each person's next login.
+This checks the file, then swaps it into the `users` / `authorities` tables. Added, removed and changed people are printed, and an invalid line stops the update. The same sync also runs on its own at 06:00 and 18:00, so **run `sync-access` when removing someone**. Changes apply at each person's next login.
 
 ### Health check, stop, start
 
@@ -218,7 +356,7 @@ From the C3G [web-app-template](https://github.com/c3g/web-app-template/blob/mai
 |------|----------|
 | Login | `bastion_ssh <you>@prod-appserver-podman-1` → `sudo machinectl shell genome@` (not `sudo -s`) |
 | Units | [`deploy/c3g-cbioportal.service`](deploy/c3g-cbioportal.service), installed to `~/.config/systemd/user/` (`deploy/c3g-cbioportal-opa.service` is for the future OPA mode, not deployed now) |
-| Updates | `--label io.containers.autoupdate=registry`: a published GitHub Release (`latest`) is picked up within ~15 min. Roll back by pinning a release tag (`:v1.0.0`). A release that changes cBioPortal's version also needs a new snapshot, so pin the old tag until the new snapshot is ready |
+| Updates | `--label io.containers.autoupdate=registry`: a published GitHub Release (`latest`) is picked up within ~15 min. Roll back by pinning a release tag (`:v1.0.0`). A release that changes cBioPortal's version also needs a new snapshot, so pin the old tag until the new snapshot is ready. A unit from before the promote / fixed-time sync (pinned `CBIO_DB_SNAPSHOT=<id>`, `CBIO_SYNC_SECS`) keeps working with a newer image: it stays pinned and warns |
 | Volume | "Reserve space" in the template, `APPNAME=cbioportal` (XFS label ≤ 12 characters) → `/home/genome/cbioportal-volume:/data:Z`. Must be local/block disk (ClickHouse runs on it). Holds `access/users.tsv` (personal data: who can log in) |
 | Shared storage | `snapshots/` mounted read-only on the webapp VM; the whole folder read-write on the Build VM. Storage type, mount point, same `genome` uid/gid on both VMs: **ASK** SD4H admins. Mounted without `:Z` (never relabel shared storage) |
 | Secrets | Prefixed podman secrets, passed as env vars:<br/>`printf '%s' '<value>' \| podman secret create C3G_CBIOPORTAL_OIDC_CLIENT_SECRET -`<br/>`python3 -c 'import secrets; print(secrets.token_hex(16), end="")' \| podman secret create C3G_CBIOPORTAL_CH_PASSWORD -`<br/>To change one: `podman secret rm`, create again, restart the unit |
@@ -272,7 +410,7 @@ clickhouse/
 | Who | Writes |
 |-----|--------|
 | Builder | Everything: schema, seed, every study in the manifest, derived tables |
-| Host | Its local copy only: schema migration at start, and the `users` / `authorities` tables from `users.tsv` (every 5 min) |
+| Host | Its local copy only: schema migration at start and after a switch, and the `users` / `authorities` tables from `users.tsv` (at each sync) |
 | Webapp | Nothing (users' saved sessions go to MongoDB, not ClickHouse) |
 
 **Adding more studies:** the database is **rebuilt from scratch on every build**. Studies are never added to the running database.
@@ -280,19 +418,20 @@ clickhouse/
 ```
 manifests/portal.txt                    build                          host
   study_A          ─┐
-  study_B           ├──►  empty DB + seed + A + B + C  ──►  snapshots/<new id>/  ──►  CBIO_DB_SNAPSHOT=<new id>, restart
+  study_B           ├──►  empty DB + seed + A + B + C  ──►  snapshots/<new id>/  ──►  promote (CURRENT) ──► switch at 06:00 / 18:00
   study_C  (new)   ─┘
 ```
 
 1. Copy the new study folder to `studies/`, its PCGR reports to `reports/<cancer_study_identifier>/`, with `groups: <PROJECT>;C3G_ADMINS` in its `meta_study.txt` (pipeline). Add the people to `users.tsv` on the host.
 2. Add one line to `manifests/portal.txt`. Keep the existing lines.
 3. Build → a new snapshot holding all the studies, old and new.
-4. Switch the host to the new snapshot and restart. The previous snapshot stays as the rollback.
+4. Promote it (`deploy/c3g-cbioportal-promote.sh <new id>`). The host switches at 06:00 or 18:00 (or `sync-now`), without a restart. The previous snapshot stays as the rollback.
 
 - **Replace a study:** update its folder, then build. **Remove a study:** delete its line, then build.
 - **Why a full rebuild:** each snapshot is exactly its manifest, so it can be rebuilt and nothing drifts. cBioPortal can't add PCGR report links to an existing study anyway.
 - **Cost:** every build reloads the seed (~10–15 min), plus each study's import (usually minutes). Long imports usually mean a problem in the pipeline output. On Narval, duplicate gene/sample rows in `data_cna_long.txt` took 68 of 70 minutes.
 - **Access:** the study's groups come with the snapshot, from `meta_study.txt`. The people (`users`/`authorities`) are never in a snapshot: the host loads them from `users.tsv` after each switch, so adding a person never needs a rebuild.
+- **Why promote is a separate step:** a build that *runs* fine isn't always *right* (a study left out of the manifest, a wrong `groups:` line). Promote shows the difference and asks before anything goes live.
 - Each snapshot is a full copy, so delete old ones by hand once they're no longer needed for a rollback.
 
 <br/>
