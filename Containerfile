@@ -23,7 +23,7 @@ FROM --platform=linux/amd64 docker.io/cbioportal/session-service:${SESSION_VERSI
 FROM docker.io/cbioportal/cbioportal:${CBIO_VERSION}
 LABEL maintainer="Gerardo Zapata gerardo.zapata@mcgill.ca"
 LABEL org.opencontainers.image.source="https://github.com/c3g/c3g_cbioportal_instance"
-LABEL org.opencontainers.image.description="All-in-one cBioPortal (webapp + ClickHouse + MongoDB + session-service) with OIDC login, per-user study access (cBioPortal users/authorities) and access-checked PCGR report tabs, for the C3G webapp VM"
+LABEL org.opencontainers.image.description="All-in-one cBioPortal (webapp + ClickHouse + MongoDB + session-service) with OIDC login, per-study access (COmanage token groups + the app's OPA) and access-checked PCGR report tabs, for the C3G webapp VM"
 LABEL org.opencontainers.image.licenses="AGPL-3.0"
 
 ## cBioPortal version recorded in every snapshot's BUILD_INFO.json; the host refuses a snapshot built with another one

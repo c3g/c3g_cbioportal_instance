@@ -29,18 +29,21 @@
 ###   snapshots         list the snapshots in /snapshots (READY, cBioPortal version, studies, CURRENT, active one)
 ###   sync-now          (podman exec) run the scheduled sync now: switch to CURRENT if it changed + access
 ###   studies           list the studies in the DB with their access groups (podman exec)
-###   users             list who can log in and their groups (podman exec)
+###   users             CBIO_AUTHZ=cbioportal only: list who can log in and their groups (podman exec)
 ###   sync-access       re-apply the access now (podman exec; also runs at every CBIO_SYNC_TIMES)
 ###   healthcheck       exit 0 when every service answers (image HEALTHCHECK)
 ###
 ### Access:   authentication = cBioPortal's OIDC login (COmanage / CILogon), always.
-###           CBIO_AUTHZ=cbioportal (default): cBioPortal's own authorization (authorization=true).
+###           CBIO_AUTHZ=opa (default): the person's groups = the token's 'groups' claim (COmanage, jwt-roles-path).
+###             Studies: the app's OPA (c3g_cbioportal/authz, from c3g-opa-policies) says which groups see which study;
+###                      written into cancer_study.groups of the host's DB copy at start, after a snapshot switch,
+###                      at every CBIO_SYNC_TIMES and on sync-access. meta_study.txt 'groups:' is overwritten.
+###             A person sees a study when one of their token groups is in the study's groups (case-insensitive).
+###             Fail closed: a study OPA does not list, or every study when OPA is unreachable -> OPA_DENY_GROUP (hidden).
+###           CBIO_AUTHZ=cbioportal (OFF for now, kept): cBioPortal's own authorization (authorization=true).
 ###             People:  /data/access/users.tsv on the host (email, name, groups) -> tables users + authorities in the
 ###                      host's DB copy, at start / CBIO_SYNC_TIMES / sync-access. Not listed -> cannot log in.
 ###             Studies: 'groups:' in meta_study.txt (pipeline, in the snapshot); must include CBIO_ADMIN_GROUP.
-###             A person sees a study when one of their groups is in the study's groups (case-insensitive).
-###           CBIO_AUTHZ=opa (FUTURE, dormant): token groups + OPA (c3g_cbioportal/authz, c3g-opa-policies) written
-###             into cancer_study.groups; OPA unreachable -> every study hidden (fail closed).
 ###           Reports (reports_server.py, port CBIO_REPORTS_PORT): served only when cBioPortal itself answers 200
 ###           to /api/studies/<study_id> with the viewer's session cookie (= same per-study access as the portal).
 ###
@@ -69,16 +72,17 @@ OIDC_CLIENT_AUTH_METHOD=${OIDC_CLIENT_AUTH_METHOD:-client_secret_basic}
 OIDC_USERNAME_CLAIM=${OIDC_USERNAME_CLAIM:-email}
 OIDC_ROLES_PATH=${OIDC_ROLES_PATH:-groups}
 CBIO_FILTER_GROUPS_BY_APPNAME=${CBIO_FILTER_GROUPS_BY_APPNAME:-false}
-CBIO_AUTHZ=${CBIO_AUTHZ:-cbioportal}               # cbioportal (users file + meta_study groups) | opa (FUTURE)
-CBIO_ADMIN_GROUP=${CBIO_ADMIN_GROUP:-C3G_ADMINS}   # cbioportal: on every study's 'groups:' line; admins carry it
+CBIO_AUTHZ=${CBIO_AUTHZ:-opa}                      # opa (token groups + OPA) | cbioportal (users file, OFF for now)
 CBIO_SYNC_TIMES=${CBIO_SYNC_TIMES:-06:00 18:00}    # host: local times (TZ) of the scheduled sync: snapshot check
-                                                   # (CBIO_DB_SNAPSHOT=current) + access (users.tsv) + cache refresh
+                                                   # (CBIO_DB_SNAPSHOT=current) + access (OPA) + cache refresh
 CBIO_SYNC_SECS_OLD=${CBIO_SYNC_SECS:-}             # replaced by CBIO_SYNC_TIMES (an old unit still setting it gets a warning)
-## FUTURE (CBIO_AUTHZ=opa) - kept dormant, see README "Who can see what"
+## CBIO_AUTHZ=opa - README "Who can see what"
 OPA_URL_FROM_ENV=${OPA_URL:-}                      # build: OPA is only asked (warning only) when OPA_URL is passed
 OPA_URL=${OPA_URL:-http://10.0.2.2:8181}           # the app's own OPA container (host loopback, slirp4netns)
 OPA_POLICY_PATH=${OPA_POLICY_PATH:-c3g_cbioportal/authz}   # Rego package c3g_cbioportal.authz
 OPA_DENY_GROUP=${OPA_DENY_GROUP:-C3G_OPA_DENY}     # written to studies OPA does not allow - never create it in COmanage
+## CBIO_AUTHZ=cbioportal (OFF for now, code kept)
+CBIO_ADMIN_GROUP=${CBIO_ADMIN_GROUP:-C3G_ADMINS}   # cbioportal: on every study's 'groups:' line; admins carry it
 CBIO_ALWAYS_SHOW_STUDY_GROUP=${CBIO_ALWAYS_SHOW_STUDY_GROUP:-}
 CBIO_FORWARD_HEADERS=${CBIO_FORWARD_HEADERS:-framework}   # trust nginx X-Forwarded-* (https redirects)
 CBIO_NCBI_BUILD=${CBIO_NCBI_BUILD:-38}
@@ -189,7 +193,7 @@ load_env() {
     ( umask 077; echo "X-API-KEY: $(python3 -c 'import secrets; print(secrets.token_hex(24))')" > "${CACHE_HEADER}" )
   fi
   CACHE_API_KEY=$(cut -d " " -f 2 "${CACHE_HEADER}")
-  ## Who decides study access: off (no login) | opa | meta_study
+  ## Who decides study access: off (no login) | opa | cbioportal
   if [ "${CBIO_AUTH}" == "false" ]; then AUTHZ=off; else AUTHZ=${CBIO_AUTHZ}; fi
   ## read by clickhouse-users.xml / clickhouse-config.xml (from_env) and by migrate_db.py / metaImport.py
   export CLICKHOUSE_PASSWORD CH_HTTP_PORT CH_NATIVE_PORT CH_MAX_MEMORY
@@ -274,14 +278,15 @@ check_auth() {
       [ -z "${missing}" ] || die "login is required (CBIO_AUTH=oauth2) but these are not set:${missing}
        See README 'How to Run'. For a local test without login ONLY: -e CBIO_AUTH=false"
       case "${CBIO_AUTHZ}" in
-        cbioportal)
-          echo "Study access: cBioPortal's own authorization - people from ${ACCESS_FILE}, study groups from"
-          echo "meta_study.txt 'groups:' (admin group ${CBIO_ADMIN_GROUP}), re-applied at ${CBIO_SYNC_TIMES} (+ sync-access)"
-          [ -e "${ACCESS_FILE}" ] || echo "WARNING: ${ACCESS_FILE} does not exist - NOBODY can log in until it does (README 'Who can see what')"
-          ;;
         opa)
           [ -n "${OPA_URL}" ] && [ -n "${OPA_POLICY_PATH}" ] || die "CBIO_AUTHZ=opa needs OPA_URL and OPA_POLICY_PATH"
-          echo "Study access decided by OPA (future mode): ${OPA_URL} (${OPA_POLICY_PATH}), re-applied at ${CBIO_SYNC_TIMES}"
+          echo "Study access decided by OPA: ${OPA_URL} (${OPA_POLICY_PATH}) x token claim '${OIDC_ROLES_PATH}',"
+          echo "re-applied at start, after a snapshot switch, at ${CBIO_SYNC_TIMES} (+ sync-access). OPA down -> every study hidden"
+          ;;
+        cbioportal)
+          echo "Study access: cBioPortal's own authorization (users-file mode, normally OFF) - people from ${ACCESS_FILE},"
+          echo "study groups from meta_study.txt 'groups:' (admin group ${CBIO_ADMIN_GROUP}), re-applied at ${CBIO_SYNC_TIMES} (+ sync-access)"
+          [ -e "${ACCESS_FILE}" ] || echo "WARNING: ${ACCESS_FILE} does not exist - NOBODY can log in until it does (README 'Who can see what')"
           ;;
         *) die "CBIO_AUTHZ must be 'cbioportal' or 'opa' (got '${CBIO_AUTHZ}')" ;;
       esac
@@ -391,7 +396,7 @@ spring.security.oauth2.client.registration.cbio-idp.authorization-grant-type=aut
 spring.security.oauth2.client.registration.cbio-idp.client-authentication-method=${OIDC_CLIENT_AUTH_METHOD}
 spring.security.oauth2.client.registration.cbio-idp.scope=${OIDC_SCOPES}
 spring.security.oauth2.client.registration.cbio-idp.redirect-uri=${OIDC_REDIRECT_URI}
-### Study access: the user's groups vs meta_study.txt 'groups:'
+### Study access: the user's groups (token claim, or users/authorities in cbioportal mode) vs cancer_study.groups
 spring.security.oauth2.client.jwt-roles-path=${OIDC_ROLES_PATH}
 filter_groups_by_appname=${CBIO_FILTER_GROUPS_BY_APPNAME}
 EOF
@@ -509,7 +514,7 @@ start_reports() {   # report gatekeeper: serves the snapshot's reports/ after as
 
 
 ################################################################################
-### Access decisions (OPA) - CBIO_AUTHZ=opa only (FUTURE)
+### Access decisions (OPA) - CBIO_AUTHZ=opa (default)
 ### OPA answers POST /v1/data/<OPA_POLICY_PATH>/study_access with {"result": {"<study_id>": ["<group>", ...]}}.
 ### Studies OPA does not list, and every study when OPA fails, get OPA_DENY_GROUP (= visible to nobody).
 
@@ -547,7 +552,7 @@ sync_access() {
 }
 
 ################################################################################
-### Access - CBIO_AUTHZ=cbioportal: cBioPortal's own users / authorities tables
+### Access - CBIO_AUTHZ=cbioportal (OFF for now, code kept): cBioPortal's own users / authorities tables
 ### ACCESS_FILE (tab-separated, '#' comments, optional header):  email <TAB> name <TAB> group1;group2
 ### -> users (email, name, enabled=1) + authorities (email, group) in the host's DB copy, swapped in atomically.
 ### cBioPortal reads them at LOGIN (by the OIDC email): not listed -> login refused; changes apply at next login.
@@ -661,7 +666,7 @@ PYEOF
 }
 
 ################################################################################
-### Access - CBIO_AUTHZ=opa (FUTURE, dormant)
+### Access - CBIO_AUTHZ=opa (default)
 ## sync_opa [verbose]: write OPA's decision into cancer_study.groups (caller holds the sync lock).
 ## Returns 1 when OPA failed (every study then hidden) or the update failed.
 sync_opa() {
@@ -1056,7 +1061,7 @@ switch_snapshot() {
     t_up=$(date +%s)
     ACTIVE_ID=${id}; SNAP=${SNAPSHOTS}/${id}
     echo "ClickHouse back on ${id} after $(( t_up - t_down )) s"
-    ## the people are not in a snapshot: load users.tsv into the new copy (the lock is already held)
+    ## access is not in a snapshot: re-apply OPA's groups (users.tsv in cbioportal mode) to the new copy (lock held)
     sync_access verbose || echo "WARNING: access not fully applied to ${id} (see above) - retried at the next sync"
     touch "${STALE_FLAG}"                                   # refresh_webapp clears cBioPortal's cache
     stop_service "${REPORTS_PID}" "report server" 10
@@ -1227,8 +1232,13 @@ do_start() {
   log "7/7 Report server (port ${CBIO_REPORTS_PORT}, public URL ${CBIO_REPORTS_URL}, embedded by ${CBIO_PORTAL_ORIGIN})"; start_reports
   local follow="pinned (CBIO_DB_SNAPSHOT=${CBIO_DB_SNAPSHOT})"
   [ "${FOLLOW_CURRENT}" -eq 0 ] || follow="follows ${POINTER}"
+  local access_src="${AUTHZ}"
+  case "${AUTHZ}" in
+    opa)        access_src="OPA ${OPA_URL}" ;;
+    cbioportal) access_src="${ACCESS_FILE}" ;;
+  esac
   log "All services up, serving snapshot ${ACTIVE_ID} (${follow}). Logs: ${LOGS}/
- Scheduled sync at ${CBIO_SYNC_TIMES}: snapshot check + access (${ACCESS_FILE}) + cache. Now: sync-now / sync-access.
+ Scheduled sync at ${CBIO_SYNC_TIMES}: snapshot check + access (${access_src}) + cache. Now: sync-now / sync-access.
  New / updated studies: build on the Build VM, then promote (README 'Add / update a study')."
 
   ## Stay in the foreground. At each CBIO_SYNC_TIMES (or on SIGUSR1 = sync-now): follow CURRENT (switch in place),
@@ -1273,7 +1283,8 @@ import_study() {
   log "Import ${study_dir}"
   cat "${study_dir}/meta_study.txt"; echo
 
-  ## Access: the study's groups (cbioportal mode) come from meta_study.txt - set them in the pipeline, not by hand
+  ## Access: opa (default) = OPA's groups replace meta_study.txt 'groups:' on the host (checked here only with OPA_URL);
+  ## cbioportal mode = the study's groups come from meta_study.txt - set them in the pipeline, not by hand
   local groups
   groups=$(sed -n 's/^groups:[[:space:]]*//p' "${study_dir}/meta_study.txt" | tr -d '[:space:]')
   if [ "${CBIO_AUTHZ}" == "opa" ]; then
@@ -1439,9 +1450,12 @@ do_promote() {
   fi
 
   echo
-  python3 -I - "${SNAPSHOTS}" "${cur}" "${id}" "${CBIO_ADMIN_GROUP}" <<'PYEOF' || rc=$?
+  python3 -I - "${SNAPSHOTS}" "${cur}" "${id}" "${CBIO_ADMIN_GROUP}" "${CBIO_AUTHZ}" <<'PYEOF' || rc=$?
 import json, os, sys
-root, cur, new, admin = sys.argv[1:5]
+root, cur, new, admin, authz = sys.argv[1:6]
+if authz == "opa":
+    print("  (groups = meta_study.txt 'groups:' as built. With CBIO_AUTHZ=opa the host replaces them with OPA's")
+    print("   decision at every sync: a study missing from c3g_cbioportal/data.json is HIDDEN on the host)\n")
 
 def load(sid):
     if not sid:
@@ -1475,7 +1489,7 @@ for sid in sorted(set(old) | set(nxt)):
     else:
         change, groups = "same", g_new
     print(f"  {sid:<32} {change:<10} {groups:<40} {reports(new, sid)}")
-    if g_new != "?" and admin.upper() not in [g.strip().upper() for g in g_new.split(";")]:
+    if authz != "opa" and g_new != "?" and admin.upper() not in [g.strip().upper() for g in g_new.split(";")]:
         print(f"      WARNING: {admin} is not in the groups of {sid} - admins will not see it")
 print(f"\n  {len(old)} -> {len(nxt)} studies ({len(set(nxt) - set(old))} added, {len(removed)} removed)")
 if removed:
@@ -1563,6 +1577,11 @@ do_studies() {
 
 do_users() {   # cbioportal mode: who can log in (users table) and their groups (authorities)
   load_env
+  if [ "${AUTHZ}" != "cbioportal" ]; then
+    echo "CBIO_AUTHZ=${AUTHZ}: cBioPortal's users table is not used. Who can log in = COmanage; a person's groups"
+    echo "come from their token ('${OIDC_ROLES_PATH}' claim). Which groups see which study: /app/entrypoint.sh studies"
+    exit 0
+  fi
   write_client_config
   log "People who can log in (from ${ACCESS_FILE}; changes apply at their next login)"
   ch_client --database "${CH_DB}" --query \
@@ -1608,13 +1627,13 @@ esac
 # ./deploy/c3g-cbioportal-build.sh portal.txt                  # = podman run --rm ... build /manifests/portal.txt
 # ./deploy/c3g-cbioportal-promote.sh <id>                      # shows the change, asks, writes <shared>/snapshots/CURRENT
 # --- Host VM (as user genome via `sudo machinectl shell genome@`; unit: -e CBIO_DB_SNAPSHOT=current)
-# /home/genome/cbioportal-volume/access/users.tsv: email <TAB> name <TAB> group1;group2   (who can log in)
+# study access = c3g_cbioportal/data.json in c3g-opa-policies (OPA bundle) x the COmanage groups in the token
 # (nothing to do after a promote: the host switches at 06:00 / 18:00 = CBIO_SYNC_TIMES, without a restart)
 # podman exec c3g-cbioportal /app/entrypoint.sh sync-now       # switch + access now instead of waiting
 # podman logs -f c3g-cbioportal
 # podman exec c3g-cbioportal /app/entrypoint.sh snapshots      # which snapshots exist, CURRENT, which one is served
-# podman exec c3g-cbioportal /app/entrypoint.sh studies        # studies + their groups
-# podman exec c3g-cbioportal /app/entrypoint.sh users          # people + their groups
-# podman exec c3g-cbioportal /app/entrypoint.sh sync-access    # after editing users.tsv, instead of waiting for 06:00 / 18:00
+# podman exec c3g-cbioportal /app/entrypoint.sh studies        # studies + their groups (C3G_OPA_DENY = hidden)
+# podman exec c3g-cbioportal /app/entrypoint.sh sync-access    # after an OPA policy change, instead of waiting for 06:00 / 18:00
+# curl -s -X POST http://127.0.0.1:8181/v1/data/c3g_cbioportal/authz/study_access   # what OPA allows (on the VM)
 # podman healthcheck run c3g-cbioportal
 # systemctl --user stop c3g-cbioportal.service              # clean, ordered shutdown (--stop-timeout 300)
