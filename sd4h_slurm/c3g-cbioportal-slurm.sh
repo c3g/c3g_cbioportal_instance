@@ -12,21 +12,27 @@
 ### same `podman run` flags as run.sh / deploy/c3g-cbioportal.service, same shared layout (studies/ reports/
 ### manifests/ snapshots/), ClickHouse on local disk only.
 ###
-###   1/5 podman setup   rootless podman 5.7.1 (module), storage + runtime on the node's local disk ($SLURM_TMPDIR)
-###   2/5 image          IMAGE_SOURCE=archive (default): podman load the newest <TEST_DIR>/image/*_amd64.tar made by
+###   1/6 podman setup   rootless podman 5.7.1 (module), storage + runtime on the node's local disk ($SLURM_TMPDIR)
+###   2/6 image          IMAGE_SOURCE=archive (default): podman load the newest <TEST_DIR>/image/*_amd64.tar made by
 ###                      sd4h_slurm/build-image-archive.sh off Cardinal | build: this clone's Containerfile (needs a subuid
 ###                      range) | pull: IMAGE from ghcr.io (needs podman login)
-###   3/5 Build VM       deploy/c3g-cbioportal-build.sh <manifest> -> <SHARED>/snapshots/<id>/ (skipped if CBIO_DB_SNAPSHOT set)
-###   4/5 Host VM        podman run c3g-cbioportal (= run.sh), serves the snapshot; waits for "All services up"
-###   5/5 serve          stays up until the job ends / scancel; healthcheck every 5 min; logs copied to <SHARED>/test_logs/
+###   3/6 OPA            (login ON only) podman run c3g-cbioportal-opa (= run.sh step 1) on a LOCAL copy of the policy:
+###                      repo opa/c3g_cbioportal/authz.rego + OPA_DATA (test data.json: study -> COmanage groups);
+###                      checks it lists every study of the manifest (an unlisted study is hidden on the host)
+###   4/6 Build VM       deploy/c3g-cbioportal-build.sh <manifest> -> <SHARED>/snapshots/<id>/ (skipped if CBIO_DB_SNAPSHOT set)
+###   5/6 Host VM        podman run c3g-cbioportal (= run.sh step 2, CBIO_AUTHZ=opa), serves the snapshot; waits for "All services up"
+###   6/6 serve          stays up until the job ends / scancel; healthcheck every 5 min; logs copied to <SHARED>/test_logs/
 ###
 ### Differences from the VMs (all forced by the Slurm node, everything else is the same):
 ###   - OIDC login works as on the VM (same COmanage client), but the callback is the tunnel's:
 ###       OIDC_REDIRECT_URI = http://localhost:<HOST_PORT>/login/oauth2/code/cbio-idp   (register it on the client)
 ###     The browser must open http://localhost:<HOST_PORT> (not 127.0.0.1). Login is ON when the issuer, client id
 ###     and client secret are found (SECRETS_DIR); otherwise CBIO_AUTH=false (no login) with a warning.
-###   - Secrets (OIDC client secret, users.tsv) come from SECRETS_DIR (chmod 700, files 600) on the project
+###   - Secrets (OIDC client secret) come from SECRETS_DIR (chmod 700, files 600) on the project
 ###     storage, not from podman secrets created by hand: the job loads them into the same podman secret names.
+###   - OPA: no bundle URL yet -> OPA reads a local folder (--watch) instead of `--bundle <bundle_url>`; the test
+###     data.json (OPA_DATA) stands in for c3g_cbioportal/data.json in c3g-opa-policies. Port 127.0.0.1:28181.
+###     OPA runs as uid 0 inside (--user 0 = you, single-uid namespace). Access = token groups x OPA, as on the VM.
 ###   - Ports are published on 127.0.0.1 of the node only, reached by an SSH tunnel (printed in the job log).
 ###     Other users with a job on the SAME node could reach 127.0.0.1 too (login still required when ON).
 ###   - CBIO_REPORTS_URL / CBIO_PORTAL_ORIGIN = http://localhost:<port> (the tunnel), written into the snapshot.
@@ -46,7 +52,7 @@ TEST_DIR=${TEST_DIR:?set TEST_DIR=/Path/to/YOUR/test_dir (throwaway test area on
 SHARED=${SHARED:-${TEST_DIR}/shared}                          # = the VMs' shared storage (studies/ reports/ manifests/ snapshots/)
 SECRETS_DIR=${SECRETS_DIR:-${TEST_DIR}/secrets}               # chmod 700. Temporary place for the test secrets:
                                                               #   oidc_client_secret  (600) the COmanage client secret
-                                                              #   users.tsv           (600) who can log in (= /data/access/users.tsv on the VM)
+                                                              #   opa_data.json       (600) test copy of c3g_cbioportal/data.json: study -> COmanage groups
                                                               #   oidc_issuer, oidc_client_id  (not secret; or pass them as env vars)
                                                               # (templates: sd4h_slurm/secrets.example/, one '# example' line each)
 value_of() { grep -vE '^[[:space:]]*(#|$)' "$1" 2>/dev/null | head -n 1 | tr -d '\r\n'; }   # first non-comment line
@@ -54,10 +60,12 @@ OIDC_ISSUER=${OIDC_ISSUER:-$(value_of "${SECRETS_DIR}/oidc_issuer")}
 OIDC_CLIENT_ID=${OIDC_CLIENT_ID:-$(value_of "${SECRETS_DIR}/oidc_client_id")}
 OIDC_SECRET_FILE=${SECRETS_DIR}/oidc_client_secret
 OIDC_CLIENT_SECRET_VALUE=$(value_of "${OIDC_SECRET_FILE}")    # never exported, never printed
-USERS_TSV=${USERS_TSV:-${SECRETS_DIR}/users.tsv}
+OPA_DATA=${OPA_DATA:-${SECRETS_DIR}/opa_data.json}            # {"admin_groups": [...], "study_groups": {"<study_id>": [...]}}
+OPA_IMAGE=${OPA_IMAGE:-docker.io/openpolicyagent/opa:1.4.2}   # = deploy/c3g-cbioportal-opa.service / run.sh
+OPA_HOST_PORT=${OPA_HOST_PORT:-28181}                         # OPA, on 127.0.0.1 of the node (VM: 8181)
 CBIO_AUTH=${CBIO_AUTH:-auto}                                  # auto = oauth2 when issuer + client id + secret are found | oauth2 | false
 CBIO_DB_SNAPSHOT=${CBIO_DB_SNAPSHOT:-}                        # set = skip the build, serve this existing snapshot
-IMAGE_SOURCE=${IMAGE_SOURCE:-archive}                         # archive | build | pull (see 2/5 above)
+IMAGE_SOURCE=${IMAGE_SOURCE:-archive}                         # archive | build | pull (see 2/6 above)
 IMAGE_ARCHIVE=${IMAGE_ARCHIVE:-}                              # archive: the .tar; empty = newest ${TEST_DIR}/image/*_amd64.tar
 IMAGE=${IMAGE:-ghcr.io/c3g/c3g_cbioportal_instance:latest}    # pull only: image to pull (same tag on Build and Host, as on the VMs)
 HOST_PORT=${HOST_PORT:-28080}                                 # portal, on 127.0.0.1 of the node (VM: 8080)
@@ -69,6 +77,7 @@ REPO_DIR=${REPO_DIR:-${SLURM_SUBMIT_DIR:-$(pwd)}}             # this repo's chec
 JOB_TMP=${SLURM_TMPDIR:-/localscratch/${USER}.${SLURM_JOB_ID:-nojob}.0}   # node-local disk (Cardinal TmpFS=/localscratch)
 
 CTR=c3g-cbioportal                                            # same container name as the VM
+OPA_CTR=c3g-cbioportal-opa                                    # same OPA container name as the VM
 CBIO_REPORTS_URL=http://localhost:${REPORTS_HOST_PORT}/reports
 CBIO_PORTAL_ORIGIN=http://localhost:${HOST_PORT}
 OIDC_REDIRECT_URI=http://localhost:${HOST_PORT}/login/oauth2/code/cbio-idp   # register this callback on the OIDC client
@@ -76,6 +85,7 @@ NODE=$(hostname -s)
 WORK=${JOB_TMP}/cbio
 HOSTDATA=${WORK}/hostdata                                     # = /home/genome/cbioportal-volume on the Host VM
 SCRATCH_ROOT=${WORK}/buildscratch                             # = SCRATCH_ROOT on the Build VM (local disk)
+OPA_POLICY=${WORK}/opa_policy                                 # OPA's folder: c3g_cbioportal/{authz.rego,data.json} (= bundle layout)
 LOGS_OUT=${SHARED}/test_logs/${SLURM_JOB_ID:-nojob}
 
 DIVIDER="=================================="; DIVIDER=$DIVIDER$DIVIDER
@@ -104,11 +114,18 @@ case "${CBIO_AUTH}" in
     [ -n "${OIDC_CLIENT_SECRET_VALUE}" ] || die "CBIO_AUTH=oauth2: no client secret in ${OIDC_SECRET_FILE} (only comment lines, or missing)"
     private "${SECRETS_DIR}" || die "${SECRETS_DIR} is readable by others: chmod 700 ${SECRETS_DIR}"
     private "${OIDC_SECRET_FILE}" || die "${OIDC_SECRET_FILE} is readable by others: chmod 600 ${OIDC_SECRET_FILE}"
-    if [ -s "${USERS_TSV}" ]; then
-      private "${USERS_TSV}" || die "${USERS_TSV} is readable by others (personal data): chmod 600 ${USERS_TSV}"
-    else
-      echo "WARNING: ${USERS_TSV} not found - the portal starts but NOBODY can log in (fail closed, as on the VM)"
-    fi
+    [ -s "${OPA_DATA}" ] || die "CBIO_AUTH=oauth2: ${OPA_DATA} not found - OPA would hide every study.
+       Copy sd4h_slurm/secrets.example/opa_data.json there and put your study ids + COmanage groups in it"
+    python3 -I - "${OPA_DATA}" <<'EOF' || die "${OPA_DATA} is not a valid OPA data.json (see above)"
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert isinstance(d, dict) and "c3g_cbioportal" not in d, "no outer 'c3g_cbioportal' key (OPA adds it from the folder name)"
+assert isinstance(d.get("admin_groups"), list) and all(isinstance(g, str) for g in d["admin_groups"]), "admin_groups must be a list of strings"
+sg = d.get("study_groups")
+assert isinstance(sg, dict) and sg, "study_groups must be a non-empty object {study_id: [groups]}"
+assert all(isinstance(v, list) and all(isinstance(g, str) for g in v) for v in sg.values()), "each study_groups value must be a list of strings"
+print(f"OPA data {sys.argv[1]}: {len(sg)} study(ies), {len(d['admin_groups'])} admin group(s)")
+EOF
     ;;
   false) echo "WARNING: no OIDC settings in ${SECRETS_DIR} (or CBIO_AUTH=false): the portal runs WITHOUT login" ;;
   *) die "CBIO_AUTH must be auto, oauth2 or false (got '${CBIO_AUTH}')" ;;
@@ -124,11 +141,13 @@ cleanup() {
   set +e
   log "Stopping ${CTR} (ordered, up to 300 s) and saving logs to ${LOGS_OUT}"
   podman stop --ignore -t 300 "${CTR}"
+  podman stop --ignore -t 10 "${OPA_CTR}"
   mkdir -p -m 700 "${LOGS_OUT}"; chmod 700 "${LOGS_OUT}"     # logs can name samples: not for the whole group
   podman logs "${CTR}" > "${LOGS_OUT}/podman_logs_${CTR}.txt" 2>&1
+  podman logs "${OPA_CTR}" > "${LOGS_OUT}/podman_logs_${OPA_CTR}.txt" 2>&1
   [ ! -d "${HOSTDATA}/logs" ] || cp -r "${HOSTDATA}/logs" "${LOGS_OUT}/host_logs"
   for b in "${SCRATCH_ROOT}"/build_*; do [ ! -d "${b}/logs" ] || cp -r "${b}/logs" "${LOGS_OUT}/$(basename "${b}")_logs"; done
-  podman rm -f --ignore "${CTR}"
+  podman rm -f --ignore "${CTR}" "${OPA_CTR}"
   podman secret rm C3G_CBIOPORTAL_CH_PASSWORD C3G_CBIOPORTAL_OIDC_CLIENT_SECRET >/dev/null 2>&1
   echo "Done. ${JOB_TMP} (podman storage, host volume, build scratch) is removed by Slurm at job end."
 }
@@ -137,7 +156,7 @@ trap 'cleanup' EXIT
 
 
 ################################################################################
-log "1/5 podman setup on ${NODE} (job ${SLURM_JOB_ID:-none}, local disk ${JOB_TMP})"
+log "1/6 podman setup on ${NODE} (job ${SLURM_JOB_ID:-none}, local disk ${JOB_TMP})"
 module purge && module load StdEnv/2023 podman/5.7.1
 
 mkdir -p "${WORK}/podman/storage" "${WORK}/podman/tmp" "${HOSTDATA}" "${SCRATCH_ROOT}" "${REPO_DIR}/job_outs"
@@ -190,7 +209,7 @@ archive)
   [ -n "${IMAGE_ARCHIVE}" ] || IMAGE_ARCHIVE=$(ls -t "${TEST_DIR}"/image/*_amd64.tar 2>/dev/null | head -n 1)
   [ -s "${IMAGE_ARCHIVE}" ] || die "no image archive (${IMAGE_ARCHIVE:-${TEST_DIR}/image/*_amd64.tar}): build it off Cardinal with
      sd4h_slurm/build-image-archive.sh and copy the .tar + .sha256 to ${TEST_DIR}/image/ (README 'SD4H Slurm test' step 2)"
-  log "2/5 Image: podman load ${IMAGE_ARCHIVE}"
+  log "2/6 Image: podman load ${IMAGE_ARCHIVE}"
   if [ -s "${IMAGE_ARCHIVE}.sha256" ]; then
     ( cd "$(dirname "${IMAGE_ARCHIVE}")" && sha256sum -c "$(basename "${IMAGE_ARCHIVE}").sha256" ) \
       || die "checksum does not match: copy incomplete or changed? (${IMAGE_ARCHIVE}.sha256)"
@@ -207,7 +226,7 @@ build)
   IMAGE=localhost/c3g_cbioportal_instance:sd4h_test
   GIT_REV=$(git -C "${REPO_DIR}" rev-parse --short HEAD 2>/dev/null || echo unknown)
   [ -z "$(git -C "${REPO_DIR}" status --porcelain --untracked-files=no 2>/dev/null)" ] || GIT_REV="${GIT_REV}+local-changes"
-  log "2/5 Image: podman build ${REPO_DIR}/Containerfile (git ${GIT_REV}) -> ${IMAGE}"
+  log "2/6 Image: podman build ${REPO_DIR}/Containerfile (git ${GIT_REV}) -> ${IMAGE}"
   ## SLURM: single-uid user namespace -> apt cannot switch to its _apt sandbox user. This apt setting is mounted
   ## only while the RUN steps run (-v), it is not in the image and the Containerfile is unchanged.
   printf 'APT::Sandbox::User "root";\n' > "${WORK}/podman/99-sd4h-no-apt-sandbox"
@@ -219,7 +238,7 @@ build)
      Without a subuid range on this cluster the mongodb install (chown) fails: use IMAGE_SOURCE=archive"
   ;;
 pull)
-  log "2/5 Image: podman pull ${IMAGE}"
+  log "2/6 Image: podman pull ${IMAGE}"
   if [[ "${IMAGE}" == ghcr.io/* ]] && [ ! -s "${REGISTRY_AUTH_FILE}" ]; then
     die "${IMAGE} is private and ${REGISTRY_AUTH_FILE} is missing: on the login node run
      module load StdEnv/2023 podman/5.7.1 && podman login ghcr.io --authfile ${REGISTRY_AUTH_FILE}   (GitHub token with read:packages)"
@@ -232,31 +251,92 @@ echo "cBioPortal version in the image: $(podman image inspect --format '{{range 
 
 
 ################################################################################
+if [ "${CBIO_AUTH}" == "oauth2" ]; then
+  log "3/6 OPA: ${OPA_CTR} (${OPA_IMAGE}) on 127.0.0.1:${OPA_HOST_PORT}, policy = repo opa/ + ${OPA_DATA}"
+  ## = the VM's OPA bundle layout: <root>/c3g_cbioportal/{authz.rego,data.json} -> data.c3g_cbioportal
+  mkdir -p -m 700 "${OPA_POLICY}/c3g_cbioportal"
+  install -m 644 "${REPO_DIR}/opa/c3g_cbioportal/authz.rego" "${OPA_POLICY}/c3g_cbioportal/authz.rego"
+  install -m 600 "${OPA_DATA}" "${OPA_POLICY}/c3g_cbioportal/data.json"
+  podman pull -q "${OPA_IMAGE}" >/dev/null || die "podman pull ${OPA_IMAGE} failed"
+  ## = run.sh step 1 / deploy/c3g-cbioportal-opa.service. Changed lines are marked "## SLURM:"
+  podman run \
+    -d \
+    --replace \
+    --name "${OPA_CTR}" \
+    --cgroups=disabled                                  `## SLURM: VM unit has --cgroups=no-conmon (systemd)` \
+    --user 0                                            `## SLURM: single-uid namespace (OPA 1.x images run as uid 1000)` \
+    -v "${OPA_POLICY}":/policy:ro                       `## SLURM: local policy copy, VM: --bundle <bundle_url>` \
+    --network slirp4netns:allow_host_loopback=true \
+    -p 127.0.0.1:"${OPA_HOST_PORT}":8181 \
+    "${OPA_IMAGE}" \
+    run --server --addr 0.0.0.0:8181 --watch /policy    `## SLURM: VM: --bundle <bundle_url>` \
+    || die "podman run ${OPA_CTR} failed"
+  ok=0
+  for _ in $(seq 1 30); do
+    if curl -fsS --max-time 5 "http://127.0.0.1:${OPA_HOST_PORT}/health" >/dev/null 2>&1; then ok=1; break; fi
+    sleep 2
+  done
+  [ "${ok}" = 1 ] || { podman logs --tail 30 "${OPA_CTR}" 2>&1; die "OPA did not answer on 127.0.0.1:${OPA_HOST_PORT}"; }
+  curl -fsS --max-time 10 -X POST -H 'Content-Type: application/json' -d '{"input": {"action": "sync"}}' \
+    -o "${WORK}/opa_study_access.json" "http://127.0.0.1:${OPA_HOST_PORT}/v1/data/c3g_cbioportal/authz/study_access" \
+    || die "OPA answers but study_access failed (policy not loaded? podman logs ${OPA_CTR})"
+  ## the study ids the host will serve: from the manifest, or the existing snapshot's BUILD_INFO.json
+  python3 -I - "${WORK}/opa_study_access.json" "${SHARED}" "${MANIFEST}" "${CBIO_DB_SNAPSHOT}" <<'EOF' || die "OPA check failed (see above)"
+import json, os, re, sys
+res_file, shared, manifest, snap = sys.argv[1:5]
+res = json.load(open(res_file)).get("result")
+if not isinstance(res, dict):
+    sys.exit("OPA gave no 'result': wrong policy path or the policy did not load")
+ids = []
+if snap:
+    info = json.load(open(os.path.join(shared, "snapshots", snap, "BUILD_INFO.json")))
+    ids = [s["study_id"] for s in info.get("studies", []) if "study_id" in s]
+else:
+    for line in open(os.path.join(shared, "manifests", manifest)):
+        f = line.strip()
+        if not f or f.startswith("#"):
+            continue
+        m = re.search(r"^cancer_study_identifier:\s*(\S+)", open(os.path.join(shared, "studies", f, "meta_study.txt")).read(), re.M)
+        ids.append(m.group(1) if m else f"<no id in {f}>")
+print("OPA study_access (what the host writes into cancer_study.groups):")
+for sid in ids:
+    g = res.get(sid)
+    print(f"  {sid:<40} {';'.join(sorted(g)) if g else 'NOT LISTED -> hidden from everyone (C3G_OPA_DENY)'}")
+for sid in sorted(set(res) - set(ids)):
+    print(f"  {sid:<40} (in OPA, not in this portal)")
+if any(not res.get(sid) for sid in ids):
+    print("WARNING: add the missing study ids to opa_data.json (study_groups) or they stay hidden")
+EOF
+else
+  log "3/6 OPA: skipped (no login: CBIO_AUTH=false shows every study, OPA is not used)"
+fi
+
+
+################################################################################
 if [ -z "${CBIO_DB_SNAPSHOT}" ]; then
   CBIO_DB_SNAPSHOT=$(date '+%Y%m%d-%H%M%S')
-  log "3/5 Build VM: snapshot ${CBIO_DB_SNAPSHOT} from manifests/${MANIFEST} (deploy/c3g-cbioportal-build.sh, unchanged flow)"
+  log "4/6 Build VM: snapshot ${CBIO_DB_SNAPSHOT} from manifests/${MANIFEST} (deploy/c3g-cbioportal-build.sh, unchanged flow)"
   SHARED="${SHARED}" SCRATCH_ROOT="${SCRATCH_ROOT}" IMAGE="${IMAGE}" SNAPSHOT_ID="${CBIO_DB_SNAPSHOT}" \
     MEMORY="" PODMAN_EXTRA_OPTS="${PODMAN_EXTRA_OPTS}" CBIO_REPORTS_URL="${CBIO_REPORTS_URL}" \
     bash "${REPO_DIR}/deploy/c3g-cbioportal-build.sh" "${MANIFEST}" || die "build failed (logs: ${LOGS_OUT} after cleanup)"
 else
-  log "3/5 Build VM: skipped, serving the existing snapshot ${CBIO_DB_SNAPSHOT}"
+  log "4/6 Build VM: skipped, serving the existing snapshot ${CBIO_DB_SNAPSHOT}"
   echo "NOTE: its PCGR report links point to the CBIO_REPORTS_URL it was built with (this job: ${CBIO_REPORTS_URL})"
 fi
 [ -f "${SHARED}/snapshots/${CBIO_DB_SNAPSHOT}/READY" ] || die "${SHARED}/snapshots/${CBIO_DB_SNAPSHOT}/READY not found"
 
 
 ################################################################################
-log "4/5 Host VM: ${CTR} serving snapshot ${CBIO_DB_SNAPSHOT} (= run.sh, login: ${CBIO_AUTH})"
+log "5/6 Host VM: ${CTR} serving snapshot ${CBIO_DB_SNAPSHOT} (= run.sh step 2, login: ${CBIO_AUTH})"
 ## Same secret names / mechanism as the VM (README "For web app maintainers"), filled from SECRETS_DIR
 python3 -c 'import secrets; print(secrets.token_hex(16), end="")' | podman secret create --replace C3G_CBIOPORTAL_CH_PASSWORD - >/dev/null
 if [ "${CBIO_AUTH}" == "oauth2" ]; then
   printf '%s' "${OIDC_CLIENT_SECRET_VALUE}" | podman secret create --replace C3G_CBIOPORTAL_OIDC_CLIENT_SECRET - >/dev/null
   AUTH_ARGS=(--secret C3G_CBIOPORTAL_OIDC_CLIENT_SECRET,type=env,target=OIDC_CLIENT_SECRET
              -e OIDC_ISSUER="${OIDC_ISSUER}" -e OIDC_CLIENT_ID="${OIDC_CLIENT_ID}"
-             -e OIDC_REDIRECT_URI="${OIDC_REDIRECT_URI}")
-  ## Who can log in: VM = /home/genome/cbioportal-volume/access/users.tsv; here a copy on the node-local volume
-  mkdir -p -m 700 "${HOSTDATA}/access"
-  [ ! -s "${USERS_TSV}" ] || install -m 600 "${USERS_TSV}" "${HOSTDATA}/access/users.tsv"
+             -e OIDC_REDIRECT_URI="${OIDC_REDIRECT_URI}"
+             -e CBIO_AUTHZ=opa -e OPA_URL="http://10.0.2.2:${OPA_HOST_PORT}")
+  echo "Study access: OPA http://10.0.2.2:${OPA_HOST_PORT} (= 127.0.0.1:${OPA_HOST_PORT} of the node) x token claim 'groups'"
   echo "OIDC: issuer ${OIDC_ISSUER}, client id ${OIDC_CLIENT_ID}, callback ${OIDC_REDIRECT_URI}"
 else
   AUTH_ARGS=(-e CBIO_AUTH=false)
@@ -274,7 +354,7 @@ podman run \
   -v "${SHARED}/snapshots":/snapshots:ro \
   -e CBIO_DB_SNAPSHOT="${CBIO_DB_SNAPSHOT}" \
   --secret C3G_CBIOPORTAL_CH_PASSWORD,type=env,target=CLICKHOUSE_PASSWORD \
-  "${AUTH_ARGS[@]}"                                     `## SLURM: = VM OIDC secret + -e lines, callback = tunnel` \
+  "${AUTH_ARGS[@]}"                                     `## SLURM: = VM OIDC secret + -e lines (+ CBIO_AUTHZ/OPA_URL), callback = tunnel` \
   -e CBIO_REPORTS_URL="${CBIO_REPORTS_URL}"             `## SLURM: tunnel URL` \
   -e CBIO_PORTAL_ORIGIN="${CBIO_PORTAL_ORIGIN}"         `## SLURM: tunnel URL` \
   --label io.containers.autoupdate=registry \
@@ -297,7 +377,7 @@ podman exec "${CTR}" /app/entrypoint.sh studies
 
 
 ################################################################################
-log "5/5 Serving on ${NODE}: 127.0.0.1:${HOST_PORT} (portal), 127.0.0.1:${REPORTS_HOST_PORT} (reports)
+log "6/6 Serving on ${NODE}: 127.0.0.1:${HOST_PORT} (portal), 127.0.0.1:${REPORTS_HOST_PORT} (reports)
 
  On your laptop (2 hops: laptop -> login node -> ${NODE}; the login-node end is a unix socket in a 700 folder,
  so other users on the login node can not use the tunnel):
@@ -312,9 +392,11 @@ log "5/5 Serving on ${NODE}: 127.0.0.1:${HOST_PORT} (portal), 127.0.0.1:${REPORT
    then open ${CBIO_PORTAL_ORIGIN}   (login: ${CBIO_AUTH}; use 'localhost', the OIDC callback is ${OIDC_REDIRECT_URI})
 
  Commands (ssh ${NODE}, then: source ${WORK}/podman_env.sh):
-   podman exec ${CTR} /app/entrypoint.sh studies | snapshots | users | healthcheck
-   Change who can log in (as on the VM, applied at the next login):
-     install -m 600 ${USERS_TSV} ${HOSTDATA}/access/users.tsv && podman exec ${CTR} /app/entrypoint.sh sync-access
+   podman exec ${CTR} /app/entrypoint.sh studies | snapshots | healthcheck     (studies: C3G_OPA_DENY = hidden)
+   What OPA allows:  curl -s -X POST http://127.0.0.1:${OPA_HOST_PORT}/v1/data/c3g_cbioportal/authz/study_access
+   Change which groups see which study (as editing data.json in c3g-opa-policies; OPA reloads the file by itself):
+     install -m 600 ${OPA_DATA} ${OPA_POLICY}/c3g_cbioportal/data.json && podman exec ${CTR} /app/entrypoint.sh sync-access
+   Groups not coming through in the token (= you see no study):  podman exec ${CTR} grep -i 'client roles' /data/logs/cbioportal.log
  Stop cleanly:  scancel --signal=TERM --batch ${SLURM_JOB_ID:-<jobid>}   (plain scancel kills after 30 s)"
 
 while true; do
@@ -336,12 +418,14 @@ done
 #            mkdir -p ${T}/shared/{studies,reports,manifests,snapshots} && mkdir -p -m 700 ${T}/secrets
 #            mkdir -p ${T}/image   # <- c3g_cbioportal_instance_<release>_<commit>_amd64.tar + .sha256 (scp from the Mac)
 #            (only for IMAGE_SOURCE=pull) module load StdEnv/2023 podman/5.7.1 && podman login ghcr.io --authfile ~/.config/containers/auth.json
-## 0b. Login (optional; without it the portal runs with no login). Callback on the COmanage client:
+## 0b. Login + OPA (optional; without login the portal runs with no login and no OPA). Callback on the COmanage client:
 #      http://localhost:28080/login/oauth2/code/cbio-idp
+#      The COmanage client must release the 'groups' claim; you must be in the groups named in opa_data.json.
 # cp sd4h_slurm/secrets.example/* ${T}/secrets/ && chmod 600 ${T}/secrets/*      # templates: one '# example' line each
 # nano ${T}/secrets/oidc_client_secret   # add the real value on a new line under the comment (never in git)
-# nano ${T}/secrets/oidc_issuer ${T}/secrets/oidc_client_id ${T}/secrets/users.tsv   # same; users.tsv is TAB-separated
-## 1. Inputs (as on the Build VM): study folder (meta_study.txt with groups:), PCGR reports, manifest
+# nano ${T}/secrets/oidc_issuer ${T}/secrets/oidc_client_id                        # same
+# nano ${T}/secrets/opa_data.json        # real study ids -> COmanage group names, exactly as in the token
+## 1. Inputs (as on the Build VM): study folder, PCGR reports, manifest
 # SH=${T}/shared
 # cp -r <study_folder> ${SH}/studies/
 # mkdir -p ${SH}/reports/<cancer_study_identifier> && cp <...>.pcgr_acmg.grch38.flexdb.html ${SH}/reports/<cancer_study_identifier>/
@@ -352,7 +436,7 @@ done
 # IMAGE_ARCHIVE=${T}/image/<file>.tar sbatch sd4h_slurm/c3g-cbioportal-slurm.sh test.txt   # a given image file, not the newest
 # IMAGE_SOURCE=pull IMAGE=ghcr.io/c3g/c3g_cbioportal_instance:v2.1.0 sbatch ...   # published image (podman login first)
 # CBIO_DB_SNAPSHOT=<id> sbatch sd4h_slurm/c3g-cbioportal-slurm.sh                # serve / roll back to an existing snapshot
-## 3. Follow + tunnel (the exact tunnel command is in the log at step 5/5)
+## 3. Follow + tunnel (the exact tunnel command is in the log at step 6/6)
 # tail -f job_outs/cbio_sd4h_test_<jobid>.o
 ## 4. Stop cleanly (ordered shutdown + logs to ${SH}/test_logs/<jobid>/)
 # scancel --signal=TERM --batch <jobid>

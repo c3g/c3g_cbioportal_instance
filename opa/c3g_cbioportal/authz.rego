@@ -13,7 +13,7 @@
 ###   admin_groups: ["<COmanage group>", ...]   -> can see every LISTED study
 ### Group strings must match the COmanage `groups` claim exactly (ask the COmanage admin: short name or COU path).
 ###
-### Queried by /app/entrypoint.sh (sync-access, every CBIO_SYNC_SECS; FUTURE mode CBIO_AUTHZ=opa):
+### Queried by /app/entrypoint.sh (CBIO_AUTHZ=opa, default): host start, every CBIO_SYNC_SECS, sync-access:
 ###   POST /v1/data/c3g_cbioportal/authz/study_access  -> {"result": {"<study_id>": ["<group>", ...]}}
 ### A study not listed here is hidden from everyone (entrypoint writes OPA_DENY_GROUP).
 ################################################################################

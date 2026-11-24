@@ -2,12 +2,12 @@
 # Additions to the template, all marked "c3g_cbioportal_instance:":
 #   --stop-timeout / -t 300 + TimeoutStopSec  -> time for the ordered shutdown (ClickHouse last, cleanly)
 #   --secret x2, -e x2                        -> OIDC login + ClickHouse password
-#   (study access: cBioPortal's own users file /data/access/users.tsv + meta_study.txt groups - no OPA unit needed;
-#    OPA is the FUTURE mode: then add -e CBIO_AUTHZ=opa -e OPA_URL=http://10.0.2.2:8181 + Wants/After c3g-cbioportal-opa.service)
+#   -e CBIO_AUTHZ, -e OPA_URL, Wants/After opa unit -> study access decided by the app's OPA (c3g-cbioportal-opa.service)
+#                                                     x the COmanage groups in the token; OPA down -> every study hidden
 #   -p 8090:8090                              -> PCGR report gatekeeper, nginx location /reports/ (README "PCGR reports")
 #   -v <shared>/snapshots:/snapshots:ro       -> DB snapshots made on the Build VM (shared SD4H storage, read-only)
 #   -e CBIO_DB_SNAPSHOT                       -> the snapshot this host serves (change + restart = update / rollback)
-# Install (as genome, via `sudo machinectl shell genome@`):
+# Install (as genome, via `sudo machinectl shell genome@`), after c3g-cbioportal-opa.service:
 #   cp c3g-cbioportal.service ~/.config/systemd/user/.
 #   systemctl --user enable --now c3g-cbioportal.service
 ## CHANGE HERE ## <issuer_url>, <client_id>
@@ -20,7 +20,9 @@ Description=C3G cBioPortal (c3g_cbioportal_instance)
 Documentation=man:podman-generate-systemd(1)
 Documentation=https://github.com/c3g/c3g_cbioportal_instance
 Wants=network-online.target
-After=network-online.target
+# c3g_cbioportal_instance: start after its OPA (without it every study is hidden)
+Wants=c3g-cbioportal-opa.service
+After=network-online.target c3g-cbioportal-opa.service
 RequiresMountsFor=%t/containers
 
 [Service]
@@ -46,6 +48,8 @@ ExecStart=/usr/bin/podman run \
 	--secret C3G_CBIOPORTAL_CH_PASSWORD,type=env,target=CLICKHOUSE_PASSWORD \
 	-e OIDC_ISSUER=<issuer_url> \
 	-e OIDC_CLIENT_ID=<client_id> \
+	-e CBIO_AUTHZ=opa \
+	-e OPA_URL=http://10.0.2.2:8181 \
 	--label io.containers.autoupdate=registry \
 	--network slirp4netns:allow_host_loopback=true \
 	-p 8090:8090 \

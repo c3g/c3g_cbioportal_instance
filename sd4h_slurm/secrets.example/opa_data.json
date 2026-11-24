@@ -1,0 +1,6 @@
+{
+  "admin_groups": ["<COmanage group of the C3G admins, exactly as in the token>"],
+  "study_groups": {
+    "<cancer_study_identifier>": ["<COmanage group of the project, exactly as in the token>"]
+  }
+}
