@@ -63,13 +63,13 @@ COPY --from=session /app.war /app/session-service.war
 # 4. Static ClickHouse configs (password, ports and memory cap are read from the environment)
 COPY config/clickhouse-config.xml config/clickhouse-users.xml /app/config/
 
-# 5. C3G logos (set by entrypoint.sh): full logo centred on the home page (skin.blurb -> images/c3g_logo_new_full_colour_EN.jpg),
+# 5. C3G logos (set by entrypoint.sh): full logo centred on the home page (skin.blurb -> images/c3g_logo_new_full_colour_EN_noBack.png),
 #    emblem in the header (skin.right_logo -> images/c3g_logo.png), moved LEFT of the login button by one CSS rule appended
 #    to cBioPortal's reactapp/styles.css (#rightHeaderContent is a flex row: login button, then the logo; no skin setting for this)
-COPY c3g_logo.png c3g_logo_new_full_colour_EN.jpg /app/
+COPY c3g_logo.png c3g_logo_new_full_colour_EN_noBack.png /app/
 RUN found=0; \
     for d in $(find /cbioportal-webapp -type d -name images); do \
-        cp /app/c3g_logo.png /app/c3g_logo_new_full_colour_EN.jpg "${d}/"; echo "logos -> ${d}/"; found=1; \
+        cp /app/c3g_logo.png /app/c3g_logo_new_full_colour_EN_noBack.png "${d}/"; echo "logos -> ${d}/"; found=1; \
     done; \
     [ "${found}" = 1 ] || echo "WARNING: no images/ folder under /cbioportal-webapp - the logos will not show"; \
     css=/cbioportal-webapp/reactapp/styles.css; \
