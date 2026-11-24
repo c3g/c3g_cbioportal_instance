@@ -47,7 +47,7 @@ One image, two jobs, on two SD4H VMs. The data lives on a separate node, the **s
    - asks, then writes `snapshots/CURRENT`.
 4. **Host sync (Host VM).** The host mounts `snapshots/` read-only. At **06:00 and 18:00** (`CBIO_SYNC_TIMES`), or right away with `sync-now`, it copies the snapshot named in `CURRENT` to its local `/data` volume and switches to it in place, **without a restart**.
 5. **Authorization (OPA).** At the same sync, the host asks its own OPA container which COmanage groups may see each study. The answer comes from `c3g_cbioportal/data.json` in the c3g-opa-policies bundle, and the host writes it into its copy (`cancer_study.groups`). A study that OPA doesn't list is hidden from everyone. If OPA is down, every study is hidden.
-6. **Client.** The browser reaches the portal over HTTPS through the VM's nginx (`cbioportal.c3g-app.sd4h.ca`). Requests under `/reports/` go to the PCGR report gatekeeper.
+6. **User.** The web browser reaches the portal over HTTPS through the VM's nginx (`cbioportal.c3g-app.sd4h.ca`). Requests under `/reports/` go to the PCGR report gatekeeper.
 7. **Authentication (COmanage / CILogon).** cBioPortal's own OIDC login sends the person to COmanage / CILogon. Their token carries their COmanage groups (the `groups` claim).
    - A person sees a study only when one of their groups is one of that study's groups.
    - A PCGR report is served only when the portal says that person may see its study.
