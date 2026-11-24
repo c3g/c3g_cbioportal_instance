@@ -61,13 +61,22 @@ COPY --from=session /app.war /app/session-service.war
 # 4. Static ClickHouse configs (password, ports and memory cap are read from the environment)
 COPY config/clickhouse-config.xml config/clickhouse-users.xml /app/config/
 
-# 5. C3G logo, centred on the home page (skin.blurb -> images/c3g_logo.png, set by entrypoint.sh)
-COPY c3g_logo.png /app/c3g_logo.png
+# 5. C3G logos (set by entrypoint.sh): full logo centred on the home page (skin.blurb -> images/c3g_logo_new_full_colour_EN.jpg),
+#    emblem in the header (skin.right_logo -> images/c3g_logo.png), moved LEFT of the login button by one CSS rule appended
+#    to cBioPortal's reactapp/styles.css (#rightHeaderContent is a flex row: login button, then the logo; no skin setting for this)
+COPY c3g_logo.png c3g_logo_new_full_colour_EN.jpg /app/
 RUN found=0; \
     for d in $(find /cbioportal-webapp -type d -name images); do \
-        cp /app/c3g_logo.png "${d}/c3g_logo.png"; echo "logo -> ${d}/c3g_logo.png"; found=1; \
+        cp /app/c3g_logo.png /app/c3g_logo_new_full_colour_EN.jpg "${d}/"; echo "logos -> ${d}/"; found=1; \
     done; \
-    [ "${found}" = 1 ] || echo "WARNING: no images/ folder under /cbioportal-webapp - home page logo will not show"
+    [ "${found}" = 1 ] || echo "WARNING: no images/ folder under /cbioportal-webapp - the logos will not show"; \
+    css=/cbioportal-webapp/reactapp/styles.css; \
+    if grep -q '#rightHeaderContent' "${css}" 2>/dev/null; then \
+        printf '\n/* c3g_cbioportal_instance: header logo left of the login button */\n.cbioportal-frontend #rightHeaderContent #institute-logo{order:-1;margin-left:0;margin-right:12px}\n' >> "${css}"; \
+        echo "header logo CSS -> ${css}"; \
+    else \
+        echo "WARNING: #rightHeaderContent not in ${css} (cBioPortal changed?) - header logo stays right of the login button"; \
+    fi
 
 # 6. Launcher + report gatekeeper + data folder (/data = local disk: DB, config, logs; host also mongo/.
 #    Snapshots come from /snapshots (shared storage); build inputs from /studies and /reports)
