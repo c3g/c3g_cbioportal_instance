@@ -1,0 +1,191 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1740" height="1080" viewBox="0 0 1740 1080">
+<defs><marker id="ah" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L10,4 L0,8 z" fill="#333"/></marker><marker id="ah-start" markerWidth="10" markerHeight="8" refX="1" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M10,0 L0,4 L10,8 z" fill="#333"/></marker></defs>
+<rect width="1740" height="1080" fill="#ffffff"/>
+<rect x="20" y="120" width="470" height="734" fill="#fffdf5" stroke="#d6b656" stroke-width="1.2"/>
+<rect x="20" y="120" width="470" height="28" fill="#fff2cc" stroke="#d6b656" stroke-width="1.2"/>
+<text x="255.0" y="139" font-family="Helvetica, Arial, sans-serif" font-size="13" font-weight="bold" font-style="normal" text-anchor="middle" fill="#222">Build VM  (imports, never serves)</text>
+<rect x="45" y="165" width="420" height="90" fill="#ffffff" stroke="#0e8088" stroke-width="1.2"/>
+<rect x="45" y="165" width="420" height="26" fill="#b0e3e6" stroke="#0e8088" stroke-width="1.2"/>
+<text x="255.0" y="183" font-family="Menlo, Consolas, monospace" font-size="12.5" font-weight="bold" font-style="normal" text-anchor="middle" fill="#222">deploy/c3g-cbioportal-build.sh &lt;manifest&gt;</text>
+<text x="55" y="209" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="normal" font-style="normal" text-anchor="start" fill="#222">starts a one-off build container (same image tag as the host)</text>
+<text x="55" y="227" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="normal" font-style="normal" text-anchor="start" fill="#222">studies/, reports/, manifests/ mounted read-only</text>
+<text x="55" y="245" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="normal" font-style="normal" text-anchor="start" fill="#222">a new, empty scratch folder for every build</text>
+<rect x="45" y="285" width="420" height="309" fill="#fffdf5" stroke="#d6b656" stroke-width="1.2"/>
+<rect x="45" y="285" width="420" height="28" fill="#fff2cc" stroke="#d6b656" stroke-width="1.2"/>
+<text x="255.0" y="304" font-family="Helvetica, Arial, sans-serif" font-size="13" font-weight="bold" font-style="normal" text-anchor="middle" fill="#222">build container  (entrypoint.sh build)</text>
+<rect x="65" y="330" width="380" height="72" fill="#ffffff" stroke="#0e8088" stroke-width="1.2"/>
+<rect x="65" y="330" width="380" height="26" fill="#b0e3e6" stroke="#0e8088" stroke-width="1.2"/>
+<text x="255.0" y="348" font-family="Helvetica, Arial, sans-serif" font-size="12.5" font-weight="bold" font-style="normal" text-anchor="middle" fill="#222">1/4  Fresh database</text>
+<text x="75" y="374" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="normal" font-style="normal" text-anchor="start" fill="#222">empty ClickHouse on the LOCAL scratch disk</text>
+<text x="75" y="392" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="normal" font-style="normal" text-anchor="start" fill="#222">schema + seed (cancer types, genes)</text>
+<rect x="65" y="416" width="380" height="72" fill="#ffffff" stroke="#0e8088" stroke-width="1.2"/>
+<rect x="65" y="416" width="380" height="26" fill="#b0e3e6" stroke="#0e8088" stroke-width="1.2"/>
+<text x="255.0" y="434" font-family="Helvetica, Arial, sans-serif" font-size="12.5" font-weight="bold" font-style="normal" text-anchor="middle" fill="#222">2/4  Every study of the manifest</text>
+<text x="75" y="460" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="normal" font-style="normal" text-anchor="start" fill="#222">offline validation, then import</text>
+<text x="75" y="478" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="normal" font-style="normal" text-anchor="start" fill="#222">PCGR reports -&gt; tabs in the patient view</text>
+<rect x="65" y="502" width="380" height="72" fill="#ffffff" stroke="#0e8088" stroke-width="1.2"/>
+<rect x="65" y="502" width="380" height="26" fill="#b0e3e6" stroke="#0e8088" stroke-width="1.2"/>
+<text x="255.0" y="520" font-family="Helvetica, Arial, sans-serif" font-size="12.5" font-weight="bold" font-style="normal" text-anchor="middle" fill="#222">3/4 + 4/4  Publish the snapshot</text>
+<text x="75" y="546" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="normal" font-style="normal" text-anchor="start" fill="#222">stop ClickHouse cleanly, copy the DB to</text>
+<text x="75" y="564" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="normal" font-style="normal" text-anchor="start" fill="#222">snapshots/&lt;id&gt;/  (READY written last)</text>
+<circle cx="457" cy="299" r="11" fill="#ffcc99" stroke="#d79b00" stroke-width="1.2"/>
+<text x="457" y="303.5" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="bold" font-style="normal" text-anchor="middle" fill="#222">2</text>
+<rect x="45" y="624" width="420" height="108" fill="#ffffff" stroke="#0e8088" stroke-width="1.2"/>
+<rect x="45" y="624" width="420" height="26" fill="#b0e3e6" stroke="#0e8088" stroke-width="1.2"/>
+<text x="255.0" y="642" font-family="Menlo, Consolas, monospace" font-size="12.5" font-weight="bold" font-style="normal" text-anchor="middle" fill="#222">deploy/c3g-cbioportal-promote.sh &lt;id&gt;</text>
+<text x="55" y="668" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="normal" font-style="normal" text-anchor="start" fill="#222">checks READY + same cBioPortal version</text>
+<text x="55" y="686" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="normal" font-style="normal" text-anchor="start" fill="#222">shows the change: studies ADDED / REMOVED / rebuilt, groups</text>
+<text x="55" y="704" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="normal" font-style="normal" text-anchor="start" fill="#222">asks, then writes snapshots/CURRENT (atomic)</text>
+<text x="55" y="722" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="normal" font-style="normal" text-anchor="start" fill="#222">roll back = promote the previous id</text>
+<circle cx="457" cy="624" r="11" fill="#ffcc99" stroke="#d79b00" stroke-width="1.2"/>
+<text x="457" y="628.5" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="bold" font-style="normal" text-anchor="middle" fill="#222">3</text>
+<rect x="45" y="757" width="420" height="72" fill="#ffffff" stroke="#0e8088" stroke-width="1.2"/>
+<rect x="45" y="757" width="420" height="26" fill="#b0e3e6" stroke="#0e8088" stroke-width="1.2"/>
+<text x="255.0" y="775" font-family="Helvetica, Arial, sans-serif" font-size="12.5" font-weight="bold" font-style="normal" text-anchor="middle" fill="#222">Local scratch disk  (SCRATCH_ROOT)</text>
+<text x="55" y="801" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="normal" font-style="normal" text-anchor="start" fill="#222">ClickHouse runs here, never on the shared storage</text>
+<text x="55" y="819" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="normal" font-style="normal" text-anchor="start" fill="#222">one build = 1 core, ~3 GB RAM (8 GB with cache)</text>
+<rect x="545" y="300" width="370" height="400" rx="10" fill="#f8cecc" stroke="#b85450" stroke-width="1.2"/>
+<text x="730.0" y="326" font-family="Helvetica, Arial, sans-serif" font-size="14" font-weight="bold" font-style="normal" text-anchor="middle" fill="#222">Shared SD4H storage  (the data)</text>
+<text x="730.0" y="344" font-family="Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="italic" text-anchor="middle" fill="#222">separate node, mounted on both VMs</text>
+<rect x="563" y="366" width="334" height="46" rx="4" fill="#ffffff" stroke="#b85450"/>
+<text x="575" y="385" font-family="Menlo, Consolas, monospace" font-size="12.5" font-weight="bold" font-style="normal" text-anchor="start" fill="#222">studies/&lt;folder&gt;/</text>
+<text x="575" y="403" font-family="Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" text-anchor="start" fill="#222">pipeline study folders</text>
+<text x="885" y="385" font-family="Helvetica, Arial, sans-serif" font-size="10.5" font-weight="bold" font-style="normal" text-anchor="end" fill="#b85450">INPUT</text>
+<rect x="563" y="430" width="334" height="46" rx="4" fill="#ffffff" stroke="#b85450"/>
+<text x="575" y="449" font-family="Menlo, Consolas, monospace" font-size="12.5" font-weight="bold" font-style="normal" text-anchor="start" fill="#222">reports/&lt;study_id&gt;/</text>
+<text x="575" y="467" font-family="Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" text-anchor="start" fill="#222">PCGR *.flexdb.html</text>
+<text x="885" y="449" font-family="Helvetica, Arial, sans-serif" font-size="10.5" font-weight="bold" font-style="normal" text-anchor="end" fill="#b85450">INPUT</text>
+<rect x="563" y="494" width="334" height="46" rx="4" fill="#ffffff" stroke="#b85450"/>
+<text x="575" y="513" font-family="Menlo, Consolas, monospace" font-size="12.5" font-weight="bold" font-style="normal" text-anchor="start" fill="#222">manifests/portal.txt</text>
+<text x="575" y="531" font-family="Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" text-anchor="start" fill="#222">studies the portal serves</text>
+<text x="885" y="513" font-family="Helvetica, Arial, sans-serif" font-size="10.5" font-weight="bold" font-style="normal" text-anchor="end" fill="#b85450">INPUT</text>
+<rect x="563" y="558" width="334" height="46" rx="4" fill="#ffffff" stroke="#b85450"/>
+<text x="575" y="577" font-family="Menlo, Consolas, monospace" font-size="12.5" font-weight="bold" font-style="normal" text-anchor="start" fill="#222">snapshots/&lt;id&gt;/</text>
+<text x="575" y="595" font-family="Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" text-anchor="start" fill="#222">ready-to-serve databases</text>
+<text x="885" y="577" font-family="Helvetica, Arial, sans-serif" font-size="10.5" font-weight="bold" font-style="normal" text-anchor="end" fill="#b85450">BUILD</text>
+<rect x="563" y="622" width="334" height="46" rx="4" fill="#ffffff" stroke="#b85450"/>
+<text x="575" y="641" font-family="Menlo, Consolas, monospace" font-size="12.5" font-weight="bold" font-style="normal" text-anchor="start" fill="#222">snapshots/CURRENT</text>
+<text x="575" y="659" font-family="Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" text-anchor="start" fill="#222">id the host must serve</text>
+<text x="885" y="641" font-family="Helvetica, Arial, sans-serif" font-size="10.5" font-weight="bold" font-style="normal" text-anchor="end" fill="#b85450">PROMOTE</text>
+<rect x="590" y="20" width="280" height="62" rx="10" fill="#f8cecc" stroke="#b85450" stroke-width="1.2"/>
+<text x="730.0" y="47.0" font-family="Helvetica, Arial, sans-serif" font-size="12.5" font-weight="bold" font-style="normal" text-anchor="middle" fill="#222">C3G analyst</text>
+<text x="730.0" y="63.0" font-family="Helvetica, Arial, sans-serif" font-size="12.5" font-weight="normal" font-style="normal" text-anchor="middle" fill="#222">pipeline output from the HPC clusters</text>
+<circle cx="870" cy="22" r="11" fill="#ffcc99" stroke="#d79b00" stroke-width="1.2"/>
+<text x="870" y="26.5" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="bold" font-style="normal" text-anchor="middle" fill="#222">1</text>
+<polyline points="730.0,82 730.0,300" fill="none" stroke="#333" stroke-width="1.2" marker-end="url(#ah)"/>
+<text x="738.0" y="200" font-family="Helvetica, Arial, sans-serif" font-size="11" text-anchor="start" fill="#222" stroke="#ffffff" stroke-width="3" paint-order="stroke">copies study folders + PCGR reports,</text>
+<text x="738.0" y="214" font-family="Helvetica, Arial, sans-serif" font-size="11" text-anchor="start" fill="#222" stroke="#ffffff" stroke-width="3" paint-order="stroke">lists them in the manifest</text>
+<rect x="970" y="120" width="540" height="940" fill="#fffdf5" stroke="#d6b656" stroke-width="1.2"/>
+<rect x="970" y="120" width="540" height="28" fill="#fff2cc" stroke="#d6b656" stroke-width="1.2"/>
+<text x="1240.0" y="139" font-family="Helvetica, Arial, sans-serif" font-size="13" font-weight="bold" font-style="normal" text-anchor="middle" fill="#222">Host VM  (webapp VM: serves, never imports)</text>
+<rect x="995" y="165" width="490" height="72" fill="#ffffff" stroke="#0e8088" stroke-width="1.2"/>
+<rect x="995" y="165" width="490" height="26" fill="#b0e3e6" stroke="#0e8088" stroke-width="1.2"/>
+<text x="1240.0" y="183" font-family="Helvetica, Arial, sans-serif" font-size="12.5" font-weight="bold" font-style="normal" text-anchor="middle" fill="#222">nginx  (HTTPS, *.c3g-app.sd4h.ca certificate)</text>
+<text x="1005" y="209" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="normal" font-style="normal" text-anchor="start" fill="#222">cbioportal.c3g-app.sd4h.ca     -&gt; :8080 portal</text>
+<text x="1005" y="227" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="normal" font-style="normal" text-anchor="start" fill="#222">cbioportal.c3g-app.sd4h.ca/reports/  -&gt; :8090 report gatekeeper</text>
+<rect x="995" y="265" width="490" height="491" fill="#fffdf5" stroke="#d6b656" stroke-width="1.2"/>
+<rect x="995" y="265" width="490" height="28" fill="#fff2cc" stroke="#d6b656" stroke-width="1.2"/>
+<text x="1240.0" y="284" font-family="Helvetica, Arial, sans-serif" font-size="13" font-weight="bold" font-style="normal" text-anchor="middle" fill="#222">container c3g-cbioportal  (c3g-cbioportal.service)</text>
+<rect x="1015" y="310" width="450" height="108" fill="#ffffff" stroke="#0e8088" stroke-width="1.2"/>
+<rect x="1015" y="310" width="450" height="26" fill="#b0e3e6" stroke="#0e8088" stroke-width="1.2"/>
+<text x="1240.0" y="328" font-family="Helvetica, Arial, sans-serif" font-size="12.5" font-weight="bold" font-style="normal" text-anchor="middle" fill="#222">cBioPortal 7.1.2 webapp  (:8080)</text>
+<text x="1025" y="354" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="normal" font-style="normal" text-anchor="start" fill="#222">AUTHENTICATION: OIDC login through COmanage / CILogon;</text>
+<text x="1025" y="372" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="normal" font-style="normal" text-anchor="start" fill="#222">    the token's 'groups' claim = the person's groups</text>
+<text x="1025" y="390" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="normal" font-style="normal" text-anchor="start" fill="#222">AUTHORIZATION: a study is shown only when one of those</text>
+<text x="1025" y="408" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="normal" font-style="normal" text-anchor="start" fill="#222">    groups is in the study's groups (cancer_study.groups)</text>
+<rect x="1015" y="434" width="450" height="72" fill="#ffffff" stroke="#0e8088" stroke-width="1.2"/>
+<rect x="1015" y="434" width="450" height="26" fill="#b0e3e6" stroke="#0e8088" stroke-width="1.2"/>
+<text x="1240.0" y="452" font-family="Helvetica, Arial, sans-serif" font-size="12.5" font-weight="bold" font-style="normal" text-anchor="middle" fill="#222">reports_server.py  (:8090)  PCGR report gatekeeper</text>
+<text x="1025" y="478" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="normal" font-style="normal" text-anchor="start" fill="#222">asks the portal GET /api/studies/&lt;id&gt; with the viewer's cookie</text>
+<text x="1025" y="496" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="normal" font-style="normal" text-anchor="start" fill="#222">200 -&gt; report served; otherwise 401 / 404 (fail closed)</text>
+<rect x="1015" y="522" width="450" height="72" fill="#ffffff" stroke="#0e8088" stroke-width="1.2"/>
+<rect x="1015" y="522" width="450" height="26" fill="#b0e3e6" stroke="#0e8088" stroke-width="1.2"/>
+<text x="1240.0" y="540" font-family="Helvetica, Arial, sans-serif" font-size="12.5" font-weight="bold" font-style="normal" text-anchor="middle" fill="#222">Databases  (local /data volume)</text>
+<text x="1025" y="566" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="normal" font-style="normal" text-anchor="start" fill="#222">ClickHouse = local copy of the CURRENT snapshot (+ the previous)</text>
+<text x="1025" y="584" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="normal" font-style="normal" text-anchor="start" fill="#222">MongoDB + session-service = saved sessions / virtual studies</text>
+<rect x="1015" y="628" width="450" height="108" fill="#ffffff" stroke="#0e8088" stroke-width="1.2"/>
+<rect x="1015" y="628" width="450" height="26" fill="#b0e3e6" stroke="#0e8088" stroke-width="1.2"/>
+<text x="1240.0" y="646" font-family="Helvetica, Arial, sans-serif" font-size="12.5" font-weight="bold" font-style="normal" text-anchor="middle" fill="#222">Scheduler  (entrypoint.sh start)</text>
+<text x="1025" y="672" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="normal" font-style="normal" text-anchor="start" fill="#222">at 06:00 / 18:00 (CBIO_SYNC_TIMES) or on sync-now:</text>
+<text x="1025" y="690" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="normal" font-style="normal" text-anchor="start" fill="#222">a) CURRENT changed -&gt; copy that snapshot, switch in place</text>
+<text x="1025" y="708" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="normal" font-style="normal" text-anchor="start" fill="#222">b) sync_opa: OPA's study -&gt; groups into cancer_study.groups</text>
+<text x="1025" y="726" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="normal" font-style="normal" text-anchor="start" fill="#222">c) clear the portal's cache</text>
+<circle cx="1457" cy="628" r="11" fill="#ffcc99" stroke="#d79b00" stroke-width="1.2"/>
+<text x="1457" y="632.5" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="bold" font-style="normal" text-anchor="middle" fill="#222">4</text>
+<rect x="995" y="806" width="490" height="150" fill="#fffdf5" stroke="#d6b656" stroke-width="1.2"/>
+<rect x="995" y="806" width="490" height="28" fill="#fff2cc" stroke="#d6b656" stroke-width="1.2"/>
+<text x="1240.0" y="825" font-family="Helvetica, Arial, sans-serif" font-size="13" font-weight="bold" font-style="normal" text-anchor="middle" fill="#222">container c3g-cbioportal-opa  (OPA 1.4.2, 127.0.0.1:8181)</text>
+<rect x="1015" y="848" width="450" height="90" fill="#ffffff" stroke="#0e8088" stroke-width="1.2"/>
+<rect x="1015" y="848" width="450" height="26" fill="#b0e3e6" stroke="#0e8088" stroke-width="1.2"/>
+<text x="1240.0" y="866" font-family="Helvetica, Arial, sans-serif" font-size="12.5" font-weight="bold" font-style="normal" text-anchor="middle" fill="#222">policy c3g_cbioportal/authz + data.json</text>
+<text x="1025" y="892" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="normal" font-style="normal" text-anchor="start" fill="#222">study_groups: {"&lt;study_id&gt;": ["&lt;COmanage group&gt;"]}</text>
+<text x="1025" y="910" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="normal" font-style="normal" text-anchor="start" fill="#222">admin_groups: see every study OPA lists</text>
+<text x="1025" y="928" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="normal" font-style="normal" text-anchor="start" fill="#222">not listed / OPA down -&gt; C3G_OPA_DENY (hidden from all)</text>
+<circle cx="1457" cy="848" r="11" fill="#ffcc99" stroke="#d79b00" stroke-width="1.2"/>
+<text x="1457" y="852.5" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="bold" font-style="normal" text-anchor="middle" fill="#222">5</text>
+<rect x="995" y="981" width="490" height="54" fill="#ffffff" stroke="#0e8088" stroke-width="1.2"/>
+<rect x="995" y="981" width="490" height="26" fill="#b0e3e6" stroke="#0e8088" stroke-width="1.2"/>
+<text x="1240.0" y="999" font-family="Helvetica, Arial, sans-serif" font-size="12.5" font-weight="bold" font-style="normal" text-anchor="middle" fill="#222">podman secrets  (passed as environment variables)</text>
+<text x="1005" y="1025" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="normal" font-style="normal" text-anchor="start" fill="#222">C3G_CBIOPORTAL_OIDC_CLIENT_SECRET,  C3G_CBIOPORTAL_CH_PASSWORD</text>
+<rect x="1120" y="20" width="240" height="62" rx="10" fill="#f8cecc" stroke="#b85450" stroke-width="1.2"/>
+<text x="1240.0" y="47.0" font-family="Helvetica, Arial, sans-serif" font-size="12.5" font-weight="bold" font-style="normal" text-anchor="middle" fill="#222">Client</text>
+<text x="1240.0" y="63.0" font-family="Helvetica, Arial, sans-serif" font-size="12.5" font-weight="normal" font-style="normal" text-anchor="middle" fill="#222">web browser</text>
+<circle cx="1354" cy="22" r="11" fill="#ffcc99" stroke="#d79b00" stroke-width="1.2"/>
+<text x="1354" y="26.5" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="bold" font-style="normal" text-anchor="middle" fill="#222">6</text>
+<polyline points="1240,82 1240,165" fill="none" stroke="#333" stroke-width="1.2" marker-end="url(#ah)"/>
+<text x="1248" y="108" font-family="Helvetica, Arial, sans-serif" font-size="11" text-anchor="start" fill="#222" stroke="#ffffff" stroke-width="3" paint-order="stroke">HTTPS</text>
+<rect x="1555" y="320" width="170" height="80" rx="10" fill="#f8cecc" stroke="#b85450" stroke-width="1.2"/>
+<text x="1640.0" y="348.0" font-family="Helvetica, Arial, sans-serif" font-size="12.5" font-weight="bold" font-style="normal" text-anchor="middle" fill="#222">COmanage / CILogon</text>
+<text x="1640.0" y="364.0" font-family="Helvetica, Arial, sans-serif" font-size="12.5" font-weight="normal" font-style="normal" text-anchor="middle" fill="#222">OIDC login</text>
+<text x="1640.0" y="380.0" font-family="Helvetica, Arial, sans-serif" font-size="12.5" font-weight="normal" font-style="normal" text-anchor="middle" fill="#222">(project groups)</text>
+<circle cx="1719" cy="322" r="11" fill="#ffcc99" stroke="#d79b00" stroke-width="1.2"/>
+<text x="1719" y="326.5" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="bold" font-style="normal" text-anchor="middle" fill="#222">7</text>
+<polyline points="1465,360 1555,360" fill="none" stroke="#333" stroke-width="1.2" marker-start="url(#ah-start)" marker-end="url(#ah)"/>
+<text x="1477" y="340" font-family="Helvetica, Arial, sans-serif" font-size="11" text-anchor="start" fill="#222" stroke="#ffffff" stroke-width="3" paint-order="stroke">login -&gt;</text>
+<text x="1477" y="354" font-family="Helvetica, Arial, sans-serif" font-size="11" text-anchor="start" fill="#222" stroke="#ffffff" stroke-width="3" paint-order="stroke">token + groups</text>
+<rect x="1555" y="856" width="170" height="80" rx="10" fill="#f8cecc" stroke="#b85450" stroke-width="1.2"/>
+<text x="1640.0" y="884.0" font-family="Helvetica, Arial, sans-serif" font-size="12.5" font-weight="bold" font-style="normal" text-anchor="middle" fill="#222">c3g-opa-policies</text>
+<text x="1640.0" y="900.0" font-family="Helvetica, Arial, sans-serif" font-size="12.5" font-weight="normal" font-style="normal" text-anchor="middle" fill="#222">OPA bundle</text>
+<text x="1640.0" y="916.0" font-family="Helvetica, Arial, sans-serif" font-size="12.5" font-weight="normal" font-style="normal" text-anchor="middle" fill="#222">(private repo)</text>
+<polyline points="1555,896 1465,896" fill="none" stroke="#333" stroke-width="1.2" marker-end="url(#ah)"/>
+<text x="1543" y="878" font-family="Helvetica, Arial, sans-serif" font-size="11" text-anchor="end" fill="#222" stroke="#ffffff" stroke-width="3" paint-order="stroke">policy</text>
+<text x="1543" y="892" font-family="Helvetica, Arial, sans-serif" font-size="11" text-anchor="end" fill="#222" stroke="#ffffff" stroke-width="3" paint-order="stroke">bundle</text>
+<rect x="570" y="760" width="320" height="62" rx="10" fill="#f8cecc" stroke="#b85450" stroke-width="1.2"/>
+<text x="730.0" y="787.0" font-family="Helvetica, Arial, sans-serif" font-size="12.5" font-weight="bold" font-style="normal" text-anchor="middle" fill="#222">ghcr.io/c3g/c3g_cbioportal_instance</text>
+<text x="730.0" y="803.0" font-family="Helvetica, Arial, sans-serif" font-size="12.5" font-weight="normal" font-style="normal" text-anchor="middle" fill="#222">same image tag on both VMs</text>
+<polyline points="570,791 490,791" fill="none" stroke="#333" stroke-width="1.2" stroke-dasharray="6,4" marker-end="url(#ah)"/>
+<text x="555" y="784" font-family="Helvetica, Arial, sans-serif" font-size="11" text-anchor="end" fill="#222" stroke="#ffffff" stroke-width="3" paint-order="stroke">pull</text>
+<polyline points="890,791 970,791" fill="none" stroke="#333" stroke-width="1.2" stroke-dasharray="6,4" marker-end="url(#ah)"/>
+<text x="905" y="784" font-family="Helvetica, Arial, sans-serif" font-size="11" text-anchor="start" fill="#222" stroke="#ffffff" stroke-width="3" paint-order="stroke">pull</text>
+<polyline points="1165,237 1165,310" fill="none" stroke="#333" stroke-width="1.2" marker-end="url(#ah)"/>
+<polyline points="1475,237 1475,447 1465,447" fill="none" stroke="#333" stroke-width="1.2" marker-end="url(#ah)"/>
+<text x="1469" y="255" font-family="Helvetica, Arial, sans-serif" font-size="11" text-anchor="end" fill="#222" stroke="#ffffff" stroke-width="3" paint-order="stroke">/reports/</text>
+<polyline points="1135,434 1135,418" fill="none" stroke="#333" stroke-width="1.2" marker-end="url(#ah)"/>
+<text x="1143" y="430" font-family="Helvetica, Arial, sans-serif" font-size="11" text-anchor="start" fill="#222" stroke="#ffffff" stroke-width="3" paint-order="stroke">may this cookie see &lt;study&gt;?</text>
+<polyline points="1015,370 1005,370 1005,562 1015,562" fill="none" stroke="#333" stroke-width="1.2" marker-end="url(#ah)"/>
+<text x="1011" y="476.0" font-family="Helvetica, Arial, sans-serif" font-size="10" font-weight="normal" font-style="normal" text-anchor="start" fill="#222"></text>
+<polyline points="1165,628 1165,594" fill="none" stroke="#333" stroke-width="1.2" marker-end="url(#ah)"/>
+<text x="1173" y="614" font-family="Helvetica, Arial, sans-serif" font-size="11" text-anchor="start" fill="#222" stroke="#ffffff" stroke-width="3" paint-order="stroke">switch + write groups</text>
+<polyline points="1165,736 1165,848" fill="none" stroke="#333" stroke-width="1.2" marker-start="url(#ah-start)" marker-end="url(#ah)"/>
+<text x="1173" y="776" font-family="Helvetica, Arial, sans-serif" font-size="11" text-anchor="start" fill="#222" stroke="#ffffff" stroke-width="3" paint-order="stroke">POST /v1/data/c3g_cbioportal/authz/study_access</text>
+<polyline points="545,388 465,388" fill="none" stroke="#333" stroke-width="1.2" marker-end="url(#ah)"/>
+<text x="537" y="366" font-family="Helvetica, Arial, sans-serif" font-size="11" text-anchor="end" fill="#222" stroke="#ffffff" stroke-width="3" paint-order="stroke">read-only:</text>
+<text x="537" y="380" font-family="Helvetica, Arial, sans-serif" font-size="11" text-anchor="end" fill="#222" stroke="#ffffff" stroke-width="3" paint-order="stroke">studies, reports, manifest</text>
+<polyline points="465,544 545,580" fill="none" stroke="#333" stroke-width="1.2" marker-end="url(#ah)"/>
+<text x="537" y="550" font-family="Helvetica, Arial, sans-serif" font-size="11" text-anchor="end" fill="#222" stroke="#ffffff" stroke-width="3" paint-order="stroke">writes</text>
+<text x="537" y="564" font-family="Helvetica, Arial, sans-serif" font-size="11" text-anchor="end" fill="#222" stroke="#ffffff" stroke-width="3" paint-order="stroke">snapshots/&lt;id&gt;/</text>
+<polyline points="465,684 520,684 520,644 545,644" fill="none" stroke="#333" stroke-width="1.2" marker-end="url(#ah)"/>
+<text x="515" y="700" font-family="Helvetica, Arial, sans-serif" font-size="11" text-anchor="end" fill="#222" stroke="#ffffff" stroke-width="3" paint-order="stroke">writes CURRENT</text>
+<polyline points="915,624 940,624 940,678 1015,678" fill="none" stroke="#333" stroke-width="1.2" marker-end="url(#ah)"/>
+<text x="933" y="725" font-family="Helvetica, Arial, sans-serif" font-size="11" text-anchor="end" fill="#222" stroke="#ffffff" stroke-width="3" paint-order="stroke">snapshots/ read-only</text>
+<text x="933" y="739" font-family="Helvetica, Arial, sans-serif" font-size="11" text-anchor="end" fill="#222" stroke="#ffffff" stroke-width="3" paint-order="stroke">(follows CURRENT)</text>
+<rect x="20" y="879" width="15" height="12" fill="#fff2cc" stroke="#d6b656"/>
+<text x="42" y="889" font-family="Helvetica, Arial, sans-serif" font-size="11" font-weight="normal" font-style="normal" text-anchor="start" fill="#222">VM / container</text>
+<rect x="20" y="899" width="15" height="12" fill="#b0e3e6" stroke="#0e8088"/>
+<text x="42" y="909" font-family="Helvetica, Arial, sans-serif" font-size="11" font-weight="normal" font-style="normal" text-anchor="start" fill="#222">component (script, service)</text>
+<rect x="20" y="919" width="15" height="12" rx="3" fill="#f8cecc" stroke="#b85450"/>
+<text x="42" y="929" font-family="Helvetica, Arial, sans-serif" font-size="11" font-weight="normal" font-style="normal" text-anchor="start" fill="#222">outside the VMs (people, data, services)</text>
+<circle cx="28" cy="949" r="11" fill="#ffcc99" stroke="#d79b00" stroke-width="1.2"/>
+<text x="28" y="953.5" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="bold" font-style="normal" text-anchor="middle" fill="#222">n</text>
+<text x="42" y="953" font-family="Helvetica, Arial, sans-serif" font-size="11" font-weight="normal" font-style="normal" text-anchor="start" fill="#222">step, explained in the README</text>
+</svg>

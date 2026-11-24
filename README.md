@@ -27,42 +27,36 @@ Home page: the full C3G logo with a welcome and contact text (`CBIO_SKIN_BLURB`)
 
 ## How it works
 
-One image, two jobs, on two SD4H VMs. They share one storage folder:
+![overview of c3g_cbioportal_instance](overview.png)
 
-```
-/Path/to/YOUR/cBioPortal/                  ← shared SD4H storage (mounted on both VMs)
-├── studies/<study_folder>/                INPUT   study folders (pipeline output)
-├── reports/<cancer_study_identifier>/     INPUT   PCGR reports (*.pcgr_acmg.grch38.flexdb.html)
-├── manifests/portal.txt                   INPUT   one study folder per line = what the portal serves
-├── snapshots/<YYYYmmdd-HHMMSS>/           BUILDER OUTPUT   ready-to-serve database (+ reports, logs, READY)
-└── snapshots/CURRENT                      PROMOTE          the snapshot id the host should serve
-```
+<sub>Diagram source: [`overview.svg`](overview.svg).</sub>
 
-### 1. Builder (Build VM): imports, never serves
+One image, two jobs, on two SD4H VMs. The data lives on a separate node, the **shared SD4H storage**, mounted on both VMs. The **Build VM** turns it into a ready-to-serve database (a **snapshot**). The **Host VM** serves that snapshot and controls who sees what.
 
-Imports every study in the manifest into a fresh database and writes it as a **snapshot**:
+1. **Data in.** The C3G analyst copies the pipeline output to the shared storage:
+   - study folders go to `studies/`;
+   - PCGR reports go to `reports/<cancer_study_identifier>/`;
+   - every study the portal should serve is listed in `manifests/portal.txt`, which is the full list.
+2. **Build (Build VM).** `deploy/c3g-cbioportal-build.sh <manifest>` starts a one-off container from the same image. The container:
+   - creates an empty ClickHouse database on the Build VM's **local** scratch disk (never on the shared storage) and loads the schema and seed;
+   - validates and imports every study in the manifest, adding the PCGR report tabs;
+   - publishes the database as `snapshots/<YYYYmmdd-HHMMSS>/`, writing `READY` last.
+3. **Promote (Build VM).** `deploy/c3g-cbioportal-promote.sh <id>`:
+   - checks the snapshot (`READY` present, same cBioPortal version);
+   - shows what changes against `CURRENT`: studies added, removed or rebuilt, and changed groups;
+   - asks, then writes `snapshots/CURRENT`.
+4. **Host sync (Host VM).** The host mounts `snapshots/` read-only. At **06:00 and 18:00** (`CBIO_SYNC_TIMES`), or right away with `sync-now`, it copies the snapshot named in `CURRENT` to its local `/data` volume and switches to it in place, **without a restart**.
+5. **Authorization (OPA).** At the same sync, the host asks its own OPA container which COmanage groups may see each study. The answer comes from `c3g_cbioportal/data.json` in the c3g-opa-policies bundle, and the host writes it into its copy (`cancer_study.groups`). A study that OPA doesn't list is hidden from everyone. If OPA is down, every study is hidden.
+6. **Client.** The browser reaches the portal over HTTPS through the VM's nginx (`cbioportal.c3g-app.sd4h.ca`). Requests under `/reports/` go to the PCGR report gatekeeper.
+7. **Authentication (COmanage / CILogon).** cBioPortal's own OIDC login sends the person to COmanage / CILogon. Their token carries their COmanage groups (the `groups` claim).
+   - A person sees a study only when one of their groups is one of that study's groups.
+   - A PCGR report is served only when the portal says that person may see its study.
 
-```bash
-SHARED=/Path/to/YOUR/cBioPortal ./deploy/c3g-cbioportal-build.sh portal.txt
-# -> /Path/to/YOUR/cBioPortal/snapshots/20261120-143000/
-```
+More detail: [Who can see what](#who-can-see-what) and [The ClickHouse database](#the-clickhouse-database).
 
-### 2. Hosting (webapp VM): serves, never imports
-
-Serves the snapshot named in `snapshots/CURRENT`. It mounts the snapshots folder read-only, copies that snapshot to its own disk, and serves the copy:
-
-```bash
-podman run ... \
-  -v /Path/to/YOUR/cBioPortal/HostData:/data:Z \
-  -v /Path/to/YOUR/cBioPortal/snapshots:/snapshots:ro \
-  -e CBIO_DB_SNAPSHOT=current -e TZ=America/Toronto -e CBIO_SYNC_TIMES="06:00 18:00" \
-  ghcr.io/c3g/c3g_cbioportal_instance:latest          # full command: deploy/c3g-cbioportal.service
-```
-
-- **Add, update or remove a study:** edit the manifest → build → **promote** (moves `CURRENT`, after showing what changes and asking). The host switches at its next sync (**06:00 or 18:00**), **without a restart**, or right away with `sync-now`.
-- **During a switch:** the new snapshot is copied while the old one still serves; then only ClickHouse restarts (~10–20 s of page errors). Logins, the webapp and saved sessions stay up. If the new database doesn't come up, the old one is put back.
+- **During a switch:** the new snapshot is copied while the old one still serves. Then only ClickHouse restarts (~10–20 s of page errors); logins, the webapp and saved sessions stay up. If the new database doesn't come up, the old one is put back.
 - **Roll back:** promote the previous snapshot id.
-- **A snapshot that doesn't come up** (at a switch or at start) is put aside as `/data/clickhouse.failed`, the previous copy keeps serving, and that id is not tried again. Build a new snapshot and promote it.
+- **A snapshot that doesn't come up** (at a switch or at start) is put aside as `/data/clickhouse.failed`. The previous copy keeps serving, and that id is not tried again. Build a new snapshot and promote it.
 - Both VMs must run the **same image tag**. The host and `promote` refuse a snapshot built with another cBioPortal version.
 
 <br/>
@@ -421,6 +415,61 @@ manifests/portal.txt                    build                          host
 - **Access:** never in a snapshot. The host writes OPA's groups into its copy after each switch, so changing access never needs a rebuild.
 - **Why promote is a separate step:** a build that *runs* fine isn't always *right* (a study left out of the manifest). Promote shows the difference and asks before anything goes live.
 - Each snapshot is a full copy, so delete old ones by hand once they're no longer needed for a rollback.
+
+<br/>
+
+---
+
+<br/>
+
+## Open questions
+
+- **What about the POST verification? Where should it go?** The idea is an authenticated POST: an app key in a request header, checked as in `require_appkey` in run_processing_dashboard's `API.py`. It would check the shared storage against what the portal displays. Not implemented yet. Still open:
+  - who sends the POST;
+  - what it checks;
+  - whether it also triggers the sync;
+  - where the endpoint runs.
+- **Where will the builder live, and the host?**
+- **Do we need a separate VM?** A build so far needs about 1 core and ~3 GB of real memory (see [Resources](#resources-measured-on-sd4h-cardinal)).
+
+<br/>
+
+---
+
+<br/>
+
+## Resources (measured on SD4H Cardinal)
+
+**Test setup.** The `sd4h_test` branch ran on Cardinal on 2026-11-23: build and host in one Slurm job, with 8 CPUs and 24 GB requested. The manifest held 3 studies, giving snapshot `20261123-152401`. The job's cgroup was sampled every 15 s, and the importer log gave the timings.
+
+**What one build needs.** Every build starts from an empty database and re-imports **every study in the manifest**. So a build takes the sum of all its studies, plus ~2 min to create the empty database (schema + seed) and ~15 s to publish. The two examples:
+
+| | `mohq_cm_5` (small) | `HellenKuasne_WES_Paired_Test` (large) |
+|---|---|---|
+| Samples | 1 | 86 |
+| Input data | 2.6 MB | 111 MB |
+| Import time | 2.3 min (~1.5 min of it is the offline validation) | **82.3 min** (81.1 min is one file, `data_cna_long.txt`, 2.14 M lines) |
+| Whole build, this study alone | **~5 min** | **~85 min** |
+| CPU, average / max | 1.6 / 2.1 cores | 1.0 / 2.5 cores (single-threaded import) |
+| RAM, real (programs) | 2.1 GB | **2.7 GB** |
+| RAM, cgroup incl. page cache | 6.7 GB | 7.1 GB |
+
+- All 3 studies together: 87 min of imports. The whole job peaked at 7.3 GB of memory, but no more than 2.7 GB of it was real program memory; the rest was page cache, which the system can reclaim.
+- **Enough for one build:** 2–4 CPUs and 8 GB RAM (8 CPUs / 24 GB was oversized). Extra cores don't make it faster, because the import runs on one core.
+- **Speed-up:** the import runs at ~440 lines/s of `data_cna_long.txt`. Removing its duplicated gene × sample lines in the converter, or not writing a long CNA file for all ~25 k genes, is the main gain.
+
+**Disk.** Only one snapshot has been measured so far. It has not been split per study.
+
+| What | Where | Size |
+|------|-------|------|
+| Image | each VM (podman storage) | 2.1 GB as an amd64 `.tar` archive |
+| Snapshot, 3 studies (`20261123-152401`) | shared storage, `snapshots/<id>/` | **138 MB** |
+| Writes per study during the import | build scratch | 5–33 MB |
+| Build scratch (`build_<id>/`) | Build VM, local disk | about one snapshot + logs, kept until removed by hand |
+| Host copy | Host VM `/data`: `clickhouse/` + `clickhouse.prev/` | about 2 × one snapshot, + MongoDB |
+
+- Every build adds a full snapshot to `snapshots/`, and old ones are only deleted by hand. With these 3 studies that's ~138 MB per build.
+- To check the space used: `du -sh <shared>/snapshots/*`.
 
 <br/>
 
