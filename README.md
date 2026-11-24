@@ -6,6 +6,7 @@ _Last Modified:_ 2026-11-24
 Private [cBioPortal](https://www.cbioportal.org/) 7.1.2 for C3G client studies (GRCh38): one podman image holding the webapp, ClickHouse, MongoDB and session-service.
 Login through C3G COmanage (OIDC/CILogon). The app's own **OPA** decides which COmanage group sees which study; a person's groups come from their login token ([Who can see what](#who-can-see-what)).
 Each sample's **PCGR report** opens as a tab in the patient view, with the same access.
+Home page: the full C3G logo with a welcome and contact text (`CBIO_SKIN_BLURB`). Header: the C3G emblem, left of the login button (`CBIO_RIGHT_LOGO`).
 
 - URL: https://cbioportal.c3g-app.sd4h.ca
 - Image: `ghcr.io/c3g/c3g_cbioportal_instance` (private: `podman login ghcr.io` first)
