@@ -81,7 +81,7 @@ CBIO_RIGHT_LOGO=${CBIO_RIGHT_LOGO-c3g_logo.png}     # header logo (file in image
                                                    # -e CBIO_RIGHT_LOGO= (empty) = none
 ## Home page centre (skin.blurb, HTML, above the study selector): full C3G logo (empty top/bottom margins trimmed by
 ## object-fit) + welcome / contact text. Replaces cBioPortal's default MSK/TCGA text.
-CBIO_SKIN_BLURB_DEFAULT='<div style="text-align:center"><img src="images/c3g_logo_new_full_colour_EN.jpg" alt="Canadian Centre for Computational Genomics (C3G)" style="width:100%;max-width:480px;aspect-ratio:3.2;object-fit:cover"><p style="font-size:16px;margin-top:10px">This is the <a href="https://c3g.ca">C3G</a> cBioPortal instance.<br>Select from the options underneath your study of interest.<br>If you do not see your study, please contact <a href="mailto:gerardo.zapata@computationalgenomics.ca">Gerardo Zapata</a>.</p></div>'
+CBIO_SKIN_BLURB_DEFAULT='<div style="text-align:center"><img src="images/c3g_logo_new_full_colour_EN_noBack.png" alt="Canadian Centre for Computational Genomics (C3G)" style="width:100%;max-width:480px;aspect-ratio:3.2;object-fit:cover"><p style="font-size:16px;margin-top:10px">This is the <a href="https://c3g.ca">C3G</a> cBioPortal instance.<br>Select from the options underneath your study of interest.<br>If you do not see your study, please contact <a href="mailto:gerardo.zapata@computationalgenomics.ca">Gerardo Zapata</a>.</p></div>'
 CBIO_SKIN_BLURB=${CBIO_SKIN_BLURB:-${CBIO_SKIN_BLURB_DEFAULT}}
 CBIO_JAVA_OPTS=${CBIO_JAVA_OPTS:--Xms2g -Xmx4g}
 CBIO_IMPORT_JAVA_OPTS=${CBIO_IMPORT_JAVA_OPTS:--Xms2G -Xmx8G}
