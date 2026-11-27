@@ -1,0 +1,11 @@
+### c3g_cbioportal_instance - report types shown as tabs in the patient view (README "Reports")
+### One line per type. Reports go flat in <shared>/reports/<cancer_study_identifier>/, named
+### <SAMPLE_ID or PATIENT_ID><SUFFIX>; ID_TAGS = an extra tag the file's id may have or lack ("-T": S1-T.orange.pdf
+### links to sample S1, S1.orange.pdf to sample S1-T), "-" = exact names only. SUFFIX ends in .html or .pdf.
+### Every type is optional per study: a study gets one tab per type it has reports for (PRIORITY = tab order).
+### OPEN_BY_DEFAULT: true = the type has its OWN tab in the patient view (the view still starts on Summary);
+### false = it is only listed under "Files & Links" (cBioPortal 7.1.2).
+### Tab-separated. Editing this file (or the image) makes the next build a FULL rebuild.
+RESOURCE_ID	SUFFIX	DISPLAY_NAME	DESCRIPTION	OPEN_BY_DEFAULT	PRIORITY	ID_TAGS
+PCGR_REPORT	.pcgr_acmg.grch38.flexdb.html	PCGR report	Personal Cancer Genome Reporter (PCGR) report for this sample	true	1	-T
+ORANGE_REPORT	.orange.pdf	ORANGE report	ORANGE (oncoanalyser / hmftools) report for this sample	true	2	-T

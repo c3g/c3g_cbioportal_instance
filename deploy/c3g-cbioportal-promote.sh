@@ -4,7 +4,7 @@
 ### Builder side (the host pod only mounts <shared>/snapshots read-only). One-off container, same image, on the
 ### builder's cores (BUILD_CPUSET) with a small memory cap, so it never takes from the host pod:
 ###   checks the snapshot (READY, cBioPortal version) -> shows what changes against <shared>/snapshots/CURRENT
-###   (studies added / removed / rebuilt, groups changed, PCGR reports) -> asks -> writes CURRENT (atomic)
+###   (studies added / removed / rebuilt, groups changed, reports per type) -> asks -> writes CURRENT (atomic)
 ###   -> one line in <shared>/snapshots/promote.log.
 ### The host pod (CBIO_DB_SNAPSHOT=current) switches to it at its next scheduled sync (06:00 / 18:00) without a
 ### restart, or right away with: podman exec c3g-cbioportal /app/entrypoint.sh sync-now

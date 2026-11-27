@@ -1,7 +1,7 @@
 ################################################################################
 ### c3g_cbioportal_instance: all-in-one cBioPortal image
 ### cBioPortal webapp + ClickHouse server + MongoDB + session-service in ONE container,
-### started (and stopped, in order) by entrypoint.sh, + reports_server.py (PCGR report tabs, same study access).
+### started (and stopped, in order) by entrypoint.sh, + reports_server.py (PCGR / ORANGE report tabs, same study access).
 ### One image, two roles, in two podman pods on one VM: `build <manifest>` in the builder pod (imports studies ->
 ### DB snapshot in the data drop folder), `start` in the host pod (serves a snapshot, never imports). README "How it works".
 ### Versions follow cbioportal-docker-compose for cBioPortal 7.1.2, except MongoDB
@@ -23,7 +23,7 @@ FROM --platform=linux/amd64 docker.io/cbioportal/session-service:${SESSION_VERSI
 FROM docker.io/cbioportal/cbioportal:${CBIO_VERSION}
 LABEL maintainer="Gerardo Zapata gerardo.zapata@mcgill.ca"
 LABEL org.opencontainers.image.source="https://github.com/c3g/c3g_cbioportal_instance"
-LABEL org.opencontainers.image.description="All-in-one cBioPortal (webapp + ClickHouse + MongoDB + session-service) with OIDC login, per-study access (COmanage token groups + the app's OPA) and access-checked PCGR report tabs, for a C3G SD4H VM (host pod + builder pod)"
+LABEL org.opencontainers.image.description="All-in-one cBioPortal (webapp + ClickHouse + MongoDB + session-service) with OIDC login, per-study access (COmanage token groups + the app's OPA) and access-checked PCGR / ORANGE report tabs, for a C3G SD4H VM (host pod + builder pod)"
 LABEL org.opencontainers.image.licenses="AGPL-3.0"
 
 ## cBioPortal version recorded in every snapshot's BUILD_INFO.json; the host refuses a snapshot built with another one
@@ -61,7 +61,8 @@ RUN /opt/clickhouse/clickhouse --version
 COPY --from=session /app.war /app/session-service.war
 
 # 4. Static ClickHouse configs (password, ports and memory cap are read from the environment)
-COPY config/clickhouse-config.xml config/clickhouse-users.xml /app/config/
+#    + the report types (PCGR, ORANGE, ...: one patient-view tab each, README "Reports")
+COPY config/clickhouse-config.xml config/clickhouse-users.xml config/report_types.tsv /app/config/
 
 # 5. C3G logos (set by entrypoint.sh): full logo centred on the home page (skin.blurb -> images/c3g_logo_new_full_colour_EN_noBack.png),
 #    emblem in the header (skin.right_logo -> images/c3g_logo.png), moved LEFT of the login button by one CSS rule appended
@@ -85,7 +86,7 @@ RUN found=0; \
 COPY entrypoint.sh reports_server.py cohort_plan.py /app/
 RUN chmod 755 /app/entrypoint.sh /app/reports_server.py /app/cohort_plan.py && mkdir -p /data
 
-# 8080 = cBioPortal, 8090 = PCGR report gatekeeper (reports_server.py, behind nginx /reports/)
+# 8080 = cBioPortal, 8090 = report gatekeeper (PCGR / ORANGE) (reports_server.py, behind nginx /reports/)
 EXPOSE 8080 8090
 STOPSIGNAL SIGTERM
 HEALTHCHECK --interval=60s --timeout=30s --start-period=15m --retries=3 \

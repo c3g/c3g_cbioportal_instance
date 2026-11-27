@@ -19,5 +19,6 @@ application.properties
 
 # Access register, study map, approvals: personal data, kept outside the repo
 *.tsv
+!config/report_types.tsv
 *.docx
 approvals/

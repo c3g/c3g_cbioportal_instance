@@ -2,7 +2,7 @@
 ################################################################################
 ### c3g_cbioportal_instance - check the drop folder, then build only what changed (README "Incremental builds")
 ### Run on the VM as genome, AFTER a transfer into <shared>/studies (and <shared>/reports) has finished.
-### A cohort = one folder of <shared>/studies = one cBioPortal study (+ its PCGR reports in reports/<study_id>/).
+### A cohort = one folder of <shared>/studies = one cBioPortal study (+ its PCGR / ORANGE reports in reports/<study_id>/).
 ###   1. one-off container (same image, the builder's cores, 2 GB): fingerprints every cohort and compares it with
 ###      CURRENT (the snapshot being served) -> prints NEW / CHANGED / SAME / REMOVED, with the samples added /
 ###      removed and the files changed, and writes the plan: <SCRATCH_ROOT>/plans/<snapshot id>.json
@@ -106,8 +106,8 @@ exec env SHARED="${SHARED}" SHARED_LABEL="${SHARED_LABEL}" SCRATCH_ROOT="${SCRAT
 
 ### How to run: ###
 # (on the VM as genome, inside tmux - a build can take hours; only after the transfer into the drop folder finished)
-# cp -r <study_folder> ${SHARED}/studies/                    # one folder per cBioPortal study (= cohort), replaced whole
-# mkdir -p ${SHARED}/reports/<cancer_study_identifier> && cp <sample>.pcgr_acmg.grch38.flexdb.html ... ${SHARED}/reports/<cancer_study_identifier>/
+# SHARED=<shared> ./deploy/c3g-cbioportal-add.sh <study_folder> <oncoanalyser_output> [<pcgr_output>]
+#                                                            # the study folder (replaced whole) + its PCGR / ORANGE reports
 # SHARED=<shared> ./deploy/c3g-cbioportal-check.sh           # shows NEW / CHANGED / SAME / REMOVED, asks, builds
 # FULL=true SHARED=<shared> ./deploy/c3g-cbioportal-check.sh # full rebuild (every cohort, empty DB)
 # PROMOTE=true SHARED=<shared> ./deploy/c3g-cbioportal-check.sh   # + promote right after a good build (asks again)

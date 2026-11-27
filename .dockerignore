@@ -8,6 +8,7 @@ data
 studies
 metadata.tsv
 *.tsv
+!config/report_types.tsv
 *.docx
 approvals
 *.sif

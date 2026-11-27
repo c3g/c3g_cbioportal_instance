@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 ################################################################################
-### c3g_cbioportal_instance - report gatekeeper (PCGR reports, README "PCGR reports")
-### Serves /data/reports/<study_id>/<file>.html at /reports/<study_id>/<file>.html,
-### shown by cBioPortal as a "resource" tab in the patient view (iframe).
+### c3g_cbioportal_instance - report gatekeeper (PCGR / ORANGE reports, README "Reports")
+### Serves /data/reports/<study_id>/<file>.html|.pdf at /reports/<study_id>/<file>,
+### shown by cBioPortal as a "resource" tab in the patient view (iframe), one tab per report type.
 ###
 ### Access: the SAME as the portal. Every request is checked by asking the running cBioPortal
 ###         GET /api/studies/<study_id> with the viewer's own session cookie:
@@ -26,9 +26,10 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import quote, unquote, urlsplit
 
-## Same rules as entrypoint.sh stage_reports: no '/', no leading '.', no '..'
+## Same rules as cohort_plan.py REPORT_FILE_RE (what the build links): no '/', no leading '.', no '..'
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
-FILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*\.html$")
+FILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*\.(html|pdf)$")
+CONTENT_TYPES = {".html": "text/html; charset=utf-8", ".pdf": "application/pdf"}
 ORIGIN_RE = re.compile(r"^https?://[A-Za-z0-9.-]+(:[0-9]+)?$")
 CHUNK = 1024 * 1024
 
@@ -98,7 +99,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/reports/health":
             self._error(200, "ok")
             return
-        parts = path.split("/")                   # ['', 'reports', '<study_id>', '<file>']
+        parts = path.split("/")                   # ['', 'reports', '<study_id>', '<file>'(, 'view' for a PDF)]
+        ## PDFs are linked as <file>.pdf/view (cohort_plan.py report_url): with a URL ending in .pdf, cBioPortal's
+        ## resource tab would frame Google's Docs viewer instead of this server. Same file, same access check.
+        if len(parts) == 5 and parts[4] == "view" and parts[3].endswith(".pdf"):
+            parts = parts[:4]
         if len(parts) != 4 or parts[0] != "" or parts[1] != "reports":
             self._log(404, path[:200]); self._error(404, "Not found."); return
         study_id, name = unquote(parts[2]), unquote(parts[3])
@@ -126,16 +131,23 @@ class Handler(BaseHTTPRequestHandler):
             self._log(404, what); self._error(404, "Not found."); return
         with fh:
             size = os.fstat(fh.fileno()).st_size
+            ext = os.path.splitext(name)[1].lower()
             self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Type", CONTENT_TYPES[ext])
             self.send_header("Content-Length", str(size))
             self.send_header("Cache-Control", "private, no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Referrer-Policy", "no-referrer")
-            ## sandbox: the report's own JS runs, but in an isolated origin (no portal cookies / parent page)
-            self.send_header("Content-Security-Policy",
-                             "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox allow-downloads; "
-                             f"frame-ancestors {ARGS.frame_origin}")
+            if ext == ".html":
+                ## sandbox: the report's own JS runs, but in an isolated origin (no portal cookies / parent page)
+                self.send_header("Content-Security-Policy",
+                                 "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox allow-downloads; "
+                                 f"frame-ancestors {ARGS.frame_origin}")
+            else:
+                ## PDF: shown by the browser's own PDF viewer, which refuses to run under a CSP sandbox -> only
+                ## frame-ancestors (who may embed it); inline = shown in the tab, with the file name for a download
+                self.send_header("Content-Security-Policy", f"frame-ancestors {ARGS.frame_origin}")
+                self.send_header("Content-Disposition", f'inline; filename="{name}"')
             self.end_headers()
             if self.command != "HEAD":
                 try:
@@ -156,7 +168,7 @@ def main():
     p = argparse.ArgumentParser(description="C3G cBioPortal report gatekeeper")
     p.add_argument("--port", type=int, required=True, help="listen port (CBIO_REPORTS_PORT)")
     p.add_argument("--portal-port", type=int, required=True, help="cBioPortal webapp port on 127.0.0.1 (CBIO_PORT)")
-    p.add_argument("--reports-dir", required=True, help="folder holding <study_id>/<file>.html")
+    p.add_argument("--reports-dir", required=True, help="folder holding <study_id>/<file>.html|.pdf")
     p.add_argument("--auth", required=True, choices=["oauth2", "false"], help="CBIO_AUTH")
     p.add_argument("--frame-origin", required=True, help="portal origin allowed to embed the reports (CBIO_PORTAL_ORIGIN)")
     p.add_argument("--log", required=True, help="access log file")

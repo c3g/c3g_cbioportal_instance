@@ -18,8 +18,8 @@ OIDC_ISSUER=${OIDC_ISSUER:?set OIDC_ISSUER (COmanage issuer URL)}
 OIDC_CLIENT_ID=${OIDC_CLIENT_ID:?set OIDC_CLIENT_ID (from the COmanage client registration)}
 OPA_BUNDLE=${OPA_BUNDLE:?set OPA_BUNDLE (c3g_cbioportal policy bundle from c3g-opa-policies)}   ## CHANGE HERE - ASK ##
 HOST_PORT=${HOST_PORT:-8080}           ## CHANGE HERE - ASK ## host port on the VM, agree it with the maintainer
-REPORTS_HOST_PORT=${REPORTS_HOST_PORT:-8090}   ## CHANGE HERE - ASK ## host port of the PCGR report gatekeeper
-                                               ## (nginx: location /reports/ -> this port, README "PCGR reports")
+REPORTS_HOST_PORT=${REPORTS_HOST_PORT:-8090}   ## CHANGE HERE - ASK ## host port of the report gatekeeper (PCGR / ORANGE)
+                                               ## (nginx: location /reports/ -> this port, README "Reports")
 OPA_HOST_PORT=${OPA_HOST_PORT:-8181}   ## CHANGE HERE - ASK ## VM 127.0.0.1 port of this app's OPA (curl checks, build warnings)
 OPA_IMAGE=${OPA_IMAGE:-docker.io/openpolicyagent/opa:1.4.2}   ## CHANGE HERE ## pin the current 1.x
 VOLUME=${VOLUME:-/home/genome/cbioportal-volume}

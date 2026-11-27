@@ -5,7 +5,7 @@ _Last Modified:_ 2026-11-27
 
 Private [cBioPortal](https://www.cbioportal.org/) 7.1.2 for C3G client studies (GRCh38): one podman image holding the webapp, ClickHouse, MongoDB and session-service.
 Login through C3G COmanage (OIDC/CILogon). The app's own **OPA** decides which COmanage group sees which study; a person's groups come from their login token ([Who can see what](#who-can-see-what)).
-Each sample's **PCGR report** opens as a tab in the patient view, with the same access.
+Each sample's **PCGR** and **ORANGE** reports open as tabs in the patient view (PCGR first), with the same access. Both are optional, per study ([Reports](#reports)).
 Home page: the full C3G logo with a welcome and contact text (`CBIO_SKIN_BLURB`). Header: the C3G emblem, left of the login button (`CBIO_RIGHT_LOGO`).
 
 - URL: https://cbioportal.c3g-app.sd4h.ca
@@ -42,21 +42,22 @@ The data is dropped into a **drop folder** on the VM (`<shared>`, location still
 
 1. **Data in.** The C3G analyst copies the pipeline output to the drop folder:
    - each cBioPortal study (a **cohort**) is one folder in `studies/`. Every folder there is served;
-   - PCGR reports go to `reports/<cancer_study_identifier>/`.
+   - its reports (PCGR HTML, ORANGE PDF; each optional) go flat into `reports/<cancer_study_identifier>/`.
+   - `deploy/c3g-cbioportal-add.sh` does both in one command.
 2. **Check + build (builder pod).** Once the transfer has finished, `deploy/c3g-cbioportal-check.sh`:
    - compares every cohort with the one in `CURRENT` (file fingerprints) and lists it as `NEW`, `CHANGED`, `SAME` or `REMOVED`;
    - asks y/N, then builds in the capped builder pod. An **incremental** build takes a copy of `CURRENT`'s database and re-imports only the `NEW` and `CHANGED` cohorts. A changed cohort is always re-imported **whole**, even when only one sample was added or updated. A **full** build starts from an empty database: the first time, after an image upgrade, or with `FULL=true` ([Incremental builds](#incremental-builds));
-   - the build validates and imports, adds the PCGR report tabs and publishes `snapshots/<YYYYmmdd-HHMMSS>/`, writing `READY` last. ClickHouse runs in the build's own **scratch** folder, never in the drop folder.
+   - the build validates and imports, adds the report tabs (one per report type found) and publishes `snapshots/<YYYYmmdd-HHMMSS>/`, writing `READY` last. ClickHouse runs in the build's own **scratch** folder, never in the drop folder.
 3. **Promote (builder side).** `deploy/c3g-cbioportal-promote.sh <id>`:
    - checks the snapshot (`READY` present, same cBioPortal version);
    - shows what changes against `CURRENT`: studies added, removed or rebuilt, and changed groups;
    - asks, then writes `snapshots/CURRENT`.
 4. **Host sync (host pod).** The host mounts `snapshots/` read-only. At **06:00 and 18:00** (`CBIO_SYNC_TIMES`), or right away with `sync-now`, it copies the snapshot named in `CURRENT` to its local `/data` volume and switches to it in place, **without a restart**.
 5. **Authorization (OPA).** At the same sync, the host asks its own OPA container (same pod, `127.0.0.1:8181`) which COmanage groups may see each study. The answer comes from `c3g_cbioportal/data.json` in the c3g-opa-policies bundle, and the host writes it into its copy (`cancer_study.groups`). A study that OPA doesn't list is hidden from everyone. If OPA is down, every study is hidden.
-6. **User.** The web browser reaches the portal over HTTPS through C3G's nginx proxy (`cbioportal.c3g-app.sd4h.ca`). Requests under `/reports/` go to the PCGR report gatekeeper.
+6. **User.** The web browser reaches the portal over HTTPS through C3G's nginx proxy (`cbioportal.c3g-app.sd4h.ca`). Requests under `/reports/` go to the report gatekeeper.
 7. **Authentication (COmanage / CILogon).** cBioPortal's own OIDC login sends the person to COmanage / CILogon. Their token carries their COmanage groups (the `groups` claim).
    - A person sees a study only when one of their groups is one of that study's groups.
-   - A PCGR report is served only when the portal says that person may see its study.
+   - A report is served only when the portal says that person may see its study.
 
 More detail: [Who can see what](#who-can-see-what) and [The ClickHouse database](#the-clickhouse-database).
 
@@ -77,50 +78,63 @@ More detail: [Who can see what](#who-can-see-what) and [The ClickHouse database]
 
 ### For updating: add, update or remove a study (builder pod)
 
-**1. Study folder.** Copy the pipeline's cBioPortal study folder as it is: one folder per study (cohort). No symlinks: only `studies/`, `reports/` and `snapshots/` are mounted.
+**1. Study + reports, in one command.** [`deploy/c3g-cbioportal-add.sh`](deploy/c3g-cbioportal-add.sh) copies the pipeline's cBioPortal study folder to `studies/<study_folder>/`. It also copies every PCGR / ORANGE report found under the report folders you give into `reports/<cancer_study_identifier>/`. It searches those folders recursively, so give the pipeline output folders as they are. It shows what it will do, then asks.
 
 ```bash
-S=/Path/to/YOUR/cbioportal_drop
-cp -r <pipeline_output>/<study_folder> ${S}/studies/
-grep -E '^(cancer_study_identifier|groups):' ${S}/studies/<study_folder>/meta_study.txt
+S=/Path/to/YOUR/cbioportal_drop        # on another machine (e.g. the HPC): S=genome@<VM>:/Path/to/YOUR/cbioportal_drop (rsync over ssh)
+SHARED=${S} ./deploy/c3g-cbioportal-add.sh <pipeline_output>/<study_folder> <oncoanalyser_output> <pcgr_output>
+#   studies/<study_folder>/   NEW
+#   reports/<study_id>/   40 report(s): PCGR 20, ORANGE 20
+# Copy? [y/N]
+grep -E '^(cancer_study_identifier|groups):' <pipeline_output>/<study_folder>/meta_study.txt
 #   cancer_study_identifier: <study_id>
-#   groups: <PROJECT>;C3G_ADMINS          ignored on the host: OPA decides (step 6)
+#   groups: <PROJECT>;C3G_ADMINS          ignored on the host: OPA decides (step 5)
 ```
 
-- **Update a cohort** (samples added or re-run): replace its whole folder. **Remove a cohort:** delete its folder (the check asks for a typed `yes`).
-- Every folder in `studies/` must be a complete cBioPortal study with a `meta_study.txt`; the check stops on any other folder.
+- Both folders end up **exactly** as given. The study folder is replaced whole. `reports/<study_id>/` holds only the reports found, so reports of dropped samples go away. Other studies are never touched.
+- **Reports are optional**, per type: give only the folders you have. With no report folder, `reports/<study_id>/` is left as it is. Which sample each report goes to is shown by the check (step 2).
+- **Update a cohort** (samples added or re-run): run it again. **Remove a cohort:** delete its folder from `${S}/studies/` (the check asks for a typed `yes`).
+- Every folder in `studies/` must be a complete cBioPortal study with a `meta_study.txt`; the check stops on any other folder. No symlinks: only `studies/`, `reports/` and `snapshots/` are mounted (the script copies the files symlinks point to).
+- `CHECK=true` runs the check (step 2) right after, when `SHARED` is a local folder.
 
-**2. PCGR reports (optional).** One flat folder per study, named after its `cancer_study_identifier`.
+<details><summary>The same by hand</summary>
 
 ```bash
+cp -r <pipeline_output>/<study_folder> ${S}/studies/
 SID=$(sed -n 's/^cancer_study_identifier:[[:space:]]*//p' ${S}/studies/<study_folder>/meta_study.txt | tr -d '[:space:]')
 mkdir -p ${S}/reports/${SID}
-find <pipeline_output> -name '*.pcgr_acmg.grch38.flexdb.html' -exec cp {} ${S}/reports/${SID}/ \;
+find <pcgr_output> -name '*.pcgr_acmg.grch38.flexdb.html' -exec cp {} ${S}/reports/${SID}/ \;
+find <oncoanalyser_output> -name '*.orange.pdf' -exec cp {} ${S}/reports/${SID}/ \;
 ```
 
-**3. Check, then build** (only after the transfer has finished). It shows what changed since `CURRENT`, asks, then builds only the new and changed cohorts. A build can take hours, so run it inside `tmux`.
+</details>
+
+**2. Check, then build** (only after the transfer has finished). It shows what changed since `CURRENT`, asks, then builds only the new and changed cohorts. A build can take hours, so run it inside `tmux`.
 
 ```bash
 tmux new -s cbio-build
 SHARED=${S} SCRATCH_ROOT=/Path/to/YOUR/BuilderScratch ./deploy/c3g-cbioportal-check.sh
 #   status   action   study_id      samples  detail
-#   CHANGED  import   cohort_a      83 (+5)  +5 sample(s): S101, ...; 6 file(s) changed: ...; 5 report(s) added: ...
+#   CHANGED  import   cohort_a      83 (+5)  +5 sample(s): S101, ...; 6 file(s) changed: ...; 10 report(s) added: ...
+#                                            reports: PCGR 83/83, ORANGE 81/83; no ORANGE: S7, S12
 #   SAME     keep     cohort_b      78       unchanged
 # Build snapshot <id> as planned above? [y/N]
 # -> Snapshot ready: .../snapshots/<id>
 ```
 
 - Nothing changed → no build. The portal keeps serving the old snapshot during the build.
+- `reports:` line of each cohort to import: how many samples get a tab of each type, which samples have none, and reports matching no sample ([Reports](#reports)). Fix the drop folder and check again if it isn't what you expect.
+- `PROMOTE=true ./deploy/c3g-cbioportal-check.sh` promotes right after a good build (it still asks), so step 3 needs no second command.
 
-**4. Promote** it: shows `ADDED` / `REMOVED` / `groups` changes against `CURRENT`, asks, writes `CURRENT`.
+**3. Promote** it: shows `ADDED` / `REMOVED` / `groups` changes against `CURRENT`, asks, writes `CURRENT`.
 
 ```bash
 SHARED=${S} ./deploy/c3g-cbioportal-promote.sh <id>
 ```
 
-**5. Live.** The host switches at **06:00 or 18:00**, without a restart. To switch now, on the host: `sync-now` (For hosting, step 5). Roll back: promote the previous id.
+**4. Live.** The host switches at **06:00 or 18:00**, without a restart. To switch now, on the host: `sync-now` (For hosting, step 5). Roll back: promote the previous id.
 
-**6. Access.** A new study is **hidden from everyone** until it is in OPA's policy: add `"<study_id>": ["<COmanage group>"]` to `c3g_cbioportal/data.json` in c3g-opa-policies, and put the people in that COmanage group ([Who can see what](#who-can-see-what)). Applied at 06:00 / 18:00 or with `sync-access`.
+**5. Access.** A new study is **hidden from everyone** until it is in OPA's policy: add `"<study_id>": ["<COmanage group>"]` to `c3g_cbioportal/data.json` in c3g-opa-policies, and put the people in that COmanage group ([Who can see what](#who-can-see-what)). Applied at 06:00 / 18:00 or with `sync-access`.
 
 ### For hosting: run the portal (host pod)
 
@@ -191,11 +205,11 @@ systemctl --user stop c3g-cbioportal-pod.service             # the whole host po
 |---|---|---|
 | Not in `CURRENT` | `NEW` | imports it |
 | Any file added, changed or removed (a sample added, updated or dropped; a report changed) | `CHANGED` | removes it and re-imports the **whole cohort** |
-| Same fingerprint | `SAME` | keeps it as it is in `CURRENT`'s database (reports copied from `CURRENT`) |
+| Same fingerprint | `SAME` | keeps it as it is in `CURRENT`'s database (reports hard-linked from `CURRENT`) |
 | In `CURRENT`, no folder any more | `REMOVED` | removes it (the check asks for a typed `yes`) |
 
 - **Incremental build:** copy of `CURRENT`'s database → `remove-study` for `REMOVED` cohorts → import of each `NEW` / `CHANGED` cohort. cBioPortal's `metaImport.py` removes the old version of a study before importing it again, so a changed cohort never ends up twice. Then the deleted rows are compacted (`APPLY DELETED MASK`), so snapshots don't grow with every rebuild. Derived tables are rebuilt for all studies after each import.
-- **Full build** (empty database, every cohort imported): when there is no usable `CURRENT` (the first build), when `CURRENT` was built before incremental builds (no fingerprints), with `FULL=true`, or when a setting the snapshot depends on changed: **another image than `CURRENT` was built with (image upgrade)**, the cBioPortal version, the report URL or report settings.
+- **Full build** (empty database, every cohort imported): when there is no usable `CURRENT` (the first build), when `CURRENT` was built before incremental builds (no fingerprints), with `FULL=true`, or when a setting the snapshot depends on changed: **another image than `CURRENT` was built with (image upgrade)**, the cBioPortal version, the report URL or the report types ([`config/report_types.tsv`](config/report_types.tsv)).
 - **Base = `CURRENT`**, the snapshot being served, never a newer unpromoted one. If you built a snapshot but didn't promote it, the next check compares against `CURRENT` again, so that snapshot's changes are included again.
 - **The plan:** `<SCRATCH_ROOT>/plans/<snapshot id>.json` (+ `.check.log`), copied into the snapshot as `logs/plan.json`. Before importing, the build re-checks the fingerprints of the cohorts to import and the image. If either changed since the check, it stops: run the check again.
 - **Check that the build matches the plan:** after the imports, the studies in the database must be exactly the plan's imported + kept cohorts, or the build fails.
@@ -212,6 +226,35 @@ systemctl --user stop c3g-cbioportal-pod.service             # the whole host po
   After the incremental builds, a `FULL=true` rebuild of the same data gave the same row count in all 63 data tables, and the edited value, mutations, CNA and report links matched. Only cBioPortal's ID counters differ, because the IDs of deleted versions are never reused.
 - **Run the check only after a transfer has finished.** It can't tell a half-copied folder from an updated one.
 - Promote shows kept cohorts as `same` and re-imported ones as `rebuilt`.
+
+<br/>
+
+---
+
+<br/>
+
+## Reports
+
+Each report type is one tab in the patient view. The types are set in [`config/report_types.tsv`](config/report_types.tsv), which is part of the image.
+
+| Type | File in `reports/<cancer_study_identifier>/` | Tab in the patient view |
+|---|---|---|
+| PCGR | `<id>.pcgr_acmg.grch38.flexdb.html` | `PCGR report`, first |
+| ORANGE | `<id>.orange.pdf` (oncoanalyser: `<group>/orange/<id>.orange.pdf`, ~8.4 MB) | `ORANGE report`, second |
+
+- **Own tab = `OPEN_BY_DEFAULT` `true`.** In cBioPortal 7.1.2 that flag decides whether a resource gets its own tab in the patient view (`PRIORITY` = order). The patient view still opens on Summary. With `false` the report is only listed under "Files & Links".
+
+- **Every type is optional, per study.** A study gets one tab per type it has reports for. A study with no reports is imported without tabs.
+- **Matching a report to a sample:** `<id>` is the sample's `SAMPLE_ID`, else its `PATIENT_ID`, each **with or without `-T`** (`ID_TAGS`). So `S1-T.orange.pdf` goes to sample `S1`, and `S1.orange.pdf` to sample `S1-T`. An exact name is always tried first.
+  - The check shows the result for each cohort it imports (`reports: PCGR 20/20, ORANGE 18/20; no ORANGE: ...`).
+  - The build log repeats it: samples without a report, reports matching no `SAMPLE_ID` / `PATIENT_ID`.
+- **How the tabs are made:** the build writes cBioPortal resource files (`data_resource_definition.txt`, `data_resource_sample.txt`) into a staging copy. The study folder is never changed. If the study folder already has its own resource files, those are used instead.
+- **In the snapshot:** `reports/<study_id>/`. A report unchanged since `CURRENT` is **hard-linked** from it instead of copied: all reports of kept cohorts, and the unchanged files of rebuilt ones. So each ORANGE PDF is stored once, not once per snapshot. Deleting an old snapshot never removes a file that another snapshot still uses.
+- **Served by** `reports_server.py` (port 8090, nginx `/reports/`), only to people who can see the study.
+  - HTML reports run in a CSP sandbox.
+  - PDFs are shown by the browser's own PDF viewer, without a sandbox (browsers don't show a PDF under one). Only the portal may embed them (`frame-ancestors`).
+  - PDFs are linked as `<file>.pdf/view`, not `<file>.pdf`. cBioPortal 7.1.2's resource tab takes the text after the last `.` of the URL path as the file type. When that is `pdf`, it frames Google's Docs viewer instead of the URL, and the tab shows "No preview available": Google can't log in to fetch the report, and patient reports must not go to Google anyway. With `/view` the tab frames the report server directly. Re-check this after a cBioPortal upgrade.
+- **Another type:** add one line to `report_types.tsv` (suffix ending in `.html` or `.pdf`), then build a new image. Changing this file makes the next build a full one.
 
 <br/>
 
@@ -277,7 +320,7 @@ podman pod ps; podman stats --no-stream                      # from another term
 
 - Incremental: starts from a copy of `CURRENT`'s database and imports only the new / changed cohorts. Full: empty database, schema + seed (~2 min on Cardinal), then every cohort.
 - ClickHouse runs in the `SCRATCH_ROOT` folder (local disk), never in the drop folder.
-- PCGR reports in `reports/<cancer_study_identifier>/` are linked to their samples (`<SAMPLE_ID or PATIENT_ID>.pcgr_acmg.grch38.flexdb.html`) and copied into the snapshot. The study folder is never changed.
+- Reports in `reports/<cancer_study_identifier>/` (PCGR, ORANGE) are linked to their samples, one tab per type, and put into the snapshot (hard links when unchanged) ([Reports](#reports)). The study folder is never changed.
 - Success: `snapshots/<id>/` with `READY` written last. Failure: only `<id>.partial/` is left, and the host refuses it.
 - Access isn't decided at build time: OPA decides on the host. With `OPA_URL=http://10.0.2.2:8181` (the host pod's OPA) the build warns about studies OPA doesn't list (those would be hidden).
 - Snapshots and scratch folders are never deleted automatically. Remove `SCRATCH_ROOT/build_<id>/` after a good build, and old snapshots once they're no longer needed for a rollback ([Resources](#resources)).
@@ -289,7 +332,7 @@ podman pod ps; podman stats --no-stream                      # from another term
 SHARED=/Path/to/YOUR/cbioportal_drop ./deploy/c3g-cbioportal-promote.sh 20261120-143000
 ```
 
-- Checks the snapshot (READY, same cBioPortal version), then shows each study against the current `CURRENT`: `ADDED`, `REMOVED`, `groups` changed (old → new), `rebuilt`, `same`, with the number of PCGR reports. The groups shown are the pipeline's `meta_study.txt` ones; on the host OPA replaces them.
+- Checks the snapshot (READY, same cBioPortal version), then shows each study against the current `CURRENT`: `ADDED`, `REMOVED`, `groups` changed (old → new), `rebuilt`, `same`, with the reports per type (`PCGR 20, ORANGE 20`). The groups shown are the pipeline's `meta_study.txt` ones; on the host OPA replaces them.
 - Asks `y/N`. If a study would **disappear** (a folder deleted from `studies/`?), you have to type `yes`.
 - Writes `snapshots/CURRENT` in one step and adds a line to `snapshots/promote.log` (date, old → new id, who).
 - `--yes` skips the question (scripts); it refuses when a study would be removed unless `CBIO_ALLOW_REMOVE=true`.
@@ -363,7 +406,8 @@ systemctl --user restart c3g-cbioportal.service          # the portal only (OPA 
 
 ```bash
 podman build -t c3g_cbioportal_instance:dev -f Containerfile .
-mkdir -p shared/{studies,reports,snapshots} scratch host     # one folder per study in shared/studies + its reports
+mkdir -p shared/{studies,reports,snapshots} scratch host
+SHARED=./shared ./deploy/c3g-cbioportal-add.sh <study_folder> <report_folder>   # each test study + its reports
 # builder pod (podman machine: no cpuset controller -> no pinning, no cgroup check; no SELinux label on a laptop mount)
 SHARED=./shared SCRATCH_ROOT=./scratch IMAGE=c3g_cbioportal_instance:dev BUILD_CPUSET= CHECK_CGROUPS=false SHARED_LABEL= \
   MEMORY=8g CBIO_REPORTS_URL=http://localhost:8090/reports ./deploy/c3g-cbioportal-check.sh
@@ -402,7 +446,7 @@ From the C3G [web-app-template](https://github.com/c3g/web-app-template/blob/mai
 | OIDC client | From the COmanage admins. Redirect URI `https://cbioportal.c3g-app.sd4h.ca/login/oauth2/code/cbio-idp`, `authorization_code` / `client_secret_basic`, scopes `openid profile email org.cilogon.userinfo`, claims `email name` **and `groups`** (the COmanage project groups; study access depends on them) |
 | Auth tier | 3b shape: cBioPortal's own OIDC login + the app's own OPA. No oauth2-proxy: nginx goes straight to the app |
 | OPA | Own container `c3g-cbioportal-opa` **inside the host pod**, pinned `openpolicyagent/opa`, policy `c3g_cbioportal/` in c3g-opa-policies, `--bundle <bundle_url>` (**ASK**: not ready yet). The portal reaches it at `http://127.0.0.1:8181` (same pod; `CBIO_AUTHZ=opa`, `OPA_URL`). The pod also publishes it on the VM's `127.0.0.1:8181` (**ASK** port) for `curl` checks and the build's optional warnings (`http://10.0.2.2:8181`) |
-| Ports | On the host pod: `8080` portal, `8090` PCGR report server: **ASK** which host ports. The builder pod publishes none |
+| Ports | On the host pod: `8080` portal, `8090` report server (PCGR / ORANGE): **ASK** which host ports. The builder pod publishes none |
 | nginx | Template server block (`*.c3g-app.sd4h.ca` certificate), `server_name cbioportal.c3g-app.sd4h.ca;`, `proxy_pass http://<VM_IP>:<portal_port>;` (**ASK** the VM's IP; the template's `172.16.8.75` is the shared webapp VM) plus the block below (same host name, so the login cookie reaches the report server) |
 | Stop timeout | `--stop-timeout=300` / `TimeoutStopSec=330`: ClickHouse needs time to stop cleanly |
 | CPU / RAM split | Host pod: no cap (all 8 cores), portal `--memory-reservation 12g`. Builder pod: cores 6–7 only (`BUILD_CPUSET`), 10 GB hard cap, no swap, `oom-score-adj 800`. Total 32 GB = host ~16 + builder 10 + OS / page cache |
@@ -427,7 +471,7 @@ Departures from the template that need maintainer sign-off:
 **What it is:** cBioPortal 7 keeps all study data in one ClickHouse database, `cbioportal` (63 tables).
 - The webapp only reads it.
 - Most of it is **seed** data loaded with every build: genes, gene sets, cancer types.
-- Each study adds its own rows: samples, mutations, copy number, structural variants, case lists, PCGR report links.
+- Each study adds its own rows: samples, mutations, copy number, structural variants, case lists, report links (PCGR, ORANGE).
 - `*_derived` tables are precomputed for the study view and rebuilt after each import.
 
 **On disk:** a ClickHouse database is a plain folder, the same in the snapshot and on the host:
@@ -517,6 +561,7 @@ studies/                              build (builder pod)                       
 | Image | the VM (podman storage, shared by both pods) | 2.1 GB as an amd64 `.tar` archive |
 | Snapshot, 3 studies (`20261123-152401`) | drop folder, `snapshots/<id>/` | **138 MB** |
 | Writes per study during the import | build scratch | 5–33 MB |
+| Reports (ORANGE ~8.4 MB per sample; PCGR not measured) | drop folder, `reports/` + `snapshots/<id>/reports/` | once in `reports/` + once in `snapshots/` (hard-linked into every snapshot while unchanged) |
 | Build scratch (`build_<id>/`) | `SCRATCH_ROOT`, local disk | about one snapshot + logs, kept until removed by hand |
 | Host copy | host pod `/data`: `clickhouse/` + `clickhouse.prev/` | about 2 × one snapshot, + MongoDB |
 
@@ -534,17 +579,18 @@ Extrapolated from the Cardinal numbers above (~20 samples per cohort). Not measu
 | Incremental build (5 samples added to one ~20-sample cohort) | that cohort re-imported whole → **~20–25 min** |
 | Builder memory | per study, not the sum: studies import one after the other, so ~2–3 GB real per ~20-sample cohort (the 1-sample study already used 2.1 GB) |
 | Builder CPU | ~1 core (single-threaded import), 2.5 at most |
-| Snapshot at 1,000 samples | ~1.5–2 GB (~1.6 MB per sample) |
+| Snapshot at 1,000 samples | ~1.5–2 GB (~1.6 MB per sample) for the database |
+| ORANGE reports at 1,000 samples | ~8.4 GB in `reports/` + ~8.4 GB in `snapshots/`, stored once for all snapshots (hard links); each re-run report adds its new version. PCGR not measured |
 | Snapshots if never deleted | the sum over 200 growing builds ≈ **150–200 GB**, plus the same again in build scratch |
 | Host `/data` | 2 × one snapshot (`clickhouse/` + `clickhouse.prev/`) + MongoDB + logs ≈ 6 GB |
 
 - **Build time:** incremental builds keep the usual build at about one cohort (~20–25 min). A full build (first build, image upgrade, `FULL=true`) takes the whole ~16–17 h at 1,000 samples, so plan image upgrades for a quiet period. A second build is refused while one runs. The portal is not slowed down either way: the builder has its own cores.
 - **Not yet measured:** after each import, the derived tables are rebuilt for **all** studies. That step wasn't timed separately, so with ~50 cohorts it may add a fixed cost to every incremental build on top of the ~20–25 min.
-- **Disk:** keep `CURRENT` + ~2 older snapshots for rollback, and remove each `build_<id>/` scratch after a good build. That's ~5–6 GB of snapshots at 1,000 samples. Never deleting them (~150–200 GB) would not fit on the ~100 GB data disk ([VM size](#vm-size-and-how-it-is-split)).
+- **Disk:** keep `CURRENT` + ~2 older snapshots for rollback, and remove each `build_<id>/` scratch after a good build. That's ~5–6 GB of snapshot databases at 1,000 samples, plus the reports above (~17 GB of ORANGE PDFs). Never deleting them (~150–200 GB) would not fit on the ~100 GB data disk ([VM size](#vm-size-and-how-it-is-split)).
 
 ### VM size and how it is split
 
-**One VM: 8 vCPU, 32 GB RAM, ~100 GB data disk** (room for the drop folder, including the PCGR reports, which haven't been measured yet).
+**One VM: 8 vCPU, 32 GB RAM, ~100 GB data disk** (room for the drop folder, including the reports: ORANGE ~8.4 MB per sample, PCGR not measured yet).
 
 | | Host pod `c3g-cbioportal` | Builder pod `c3g-cbioportal-build` |
 |---|---|---|

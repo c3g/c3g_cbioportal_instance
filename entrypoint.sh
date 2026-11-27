@@ -28,8 +28,9 @@
 ###                       full:        empty DB -> schema + seed -> import every cohort;
 ###                     -> offline validation per cohort -> stop ClickHouse -> publish /snapshots/<id>/
 ###                     {clickhouse/, reports/, logs/, BUILD_INFO.json (+ cohort fingerprints), READY (last)}.
-###                     Reports in /reports/<study_id>/ (PCGR flexdb HTML) are linked to their samples as cBioPortal
-###                     "resources" (generated in a staging copy; the study folder is not changed) and copied in.
+###                     Reports in /reports/<study_id>/ (PCGR HTML, ORANGE PDF, ...: CBIO_REPORT_TYPES) are linked to
+###                     their samples as cBioPortal "resources" (one tab per type; generated in a staging copy, the
+###                     study folder is not changed) and put in the snapshot (hard links when unchanged).
 ###   start             (host pod, default CMD) activate CBIO_DB_SNAPSHOT, then start every service, webapp + report
 ###                     gatekeeper last. On SIGTERM (podman stop) stops reports -> webapp -> session -> mongod -> ClickHouse.
 ###                     At each CBIO_SYNC_TIMES: snapshot check (follow CURRENT) + access sync + cache refresh.
@@ -64,7 +65,7 @@
 ###             Build: clickhouse/, config/ (staging/, importer JAR), logs/, portalinfo/  (scratch, one per build)
 ###           /snapshots (CBIO_SNAPSHOTS_DIR) = <shared>/snapshots in the data drop folder: builder writes, host reads only.
 ###             /snapshots/CURRENT = the snapshot id the host should serve (written only by `promote`; log: promote.log).
-###           Build inputs (read-only): /studies/<folder>/ (pipeline output), /reports/<study_id>/ (PCGR HTML).
+###           Build inputs (read-only): /studies/<folder>/ (pipeline output), /reports/<study_id>/ (PCGR / ORANGE reports).
 ################################################################################
 set -euo pipefail
 
@@ -114,13 +115,15 @@ CH_NATIVE_PORT=${CH_NATIVE_PORT:-9000}
 SESSION_PORT=${SESSION_PORT:-5001}
 MONGO_PORT=${MONGO_PORT:-27017}
 
-## CHANGE HERE ## PCGR reports (README "PCGR reports")
+## CHANGE HERE ## reports: PCGR, ORANGE, ... (README "Reports")
 CBIO_REPORTS_PORT=${CBIO_REPORTS_PORT:-8090}       # report gatekeeper (reports_server.py), published + behind nginx /reports/
 CBIO_REPORTS_URL=${CBIO_REPORTS_URL:-https://cbioportal.c3g-app.sd4h.ca/reports}   # public base URL written into the study
-CBIO_REPORT_SUFFIX=${CBIO_REPORT_SUFFIX:-.pcgr_acmg.grch38.flexdb.html}             # report = <SAMPLE_ID or PATIENT_ID><suffix>
-CBIO_REPORT_NAME=${CBIO_REPORT_NAME:-PCGR report}                                 # tab name in the patient view
-CBIO_REPORT_DESCRIPTION=${CBIO_REPORT_DESCRIPTION:-Personal Cancer Genome Reporter (PCGR) report for this sample}
-CBIO_REPORT_OPEN_BY_DEFAULT=${CBIO_REPORT_OPEN_BY_DEFAULT:-true}                  # true = tab opens with the patient view
+CBIO_REPORT_TYPES=${CBIO_REPORT_TYPES:-/app/config/report_types.tsv}   # one line per type: suffix, tab name, description,
+                                                   # own tab (OPEN_BY_DEFAULT), tab order, id tags (-T). Report =
+                                                   # <SAMPLE_ID or PATIENT_ID (+/- tag)><suffix>; every type optional
+for _old in CBIO_REPORT_SUFFIX CBIO_REPORT_NAME CBIO_REPORT_DESCRIPTION CBIO_REPORT_OPEN_BY_DEFAULT; do
+  [ -z "${!_old:-}" ] || echo "WARNING: ${_old} is no longer used - report types are set in ${CBIO_REPORT_TYPES}"
+done
 ## portal origin allowed to embed the reports (CSP frame-ancestors); default = scheme://host of CBIO_REPORTS_URL
 if [ -z "${CBIO_PORTAL_ORIGIN:-}" ] && [[ "${CBIO_REPORTS_URL}" =~ ^(https?://[^/]+) ]]; then
   CBIO_PORTAL_ORIGIN=${BASH_REMATCH[1]}
@@ -141,7 +144,7 @@ CBIO_VERSION=${CBIO_VERSION:-unknown}              # set by the Containerfile (E
 ## Fixed paths / names (DATA itself can be moved with CBIO_DATA_DIR - same value in both roles)
 DATA=${CBIO_DATA_DIR:-/data}                       # C3G web-app-template: app data under /data
 STUDIES=${CBIO_STUDIES_DIR:-/studies}              # build input: study folders (read-only mount)
-REPORTS=${CBIO_BUILD_REPORTS_DIR:-/reports}        # build input: reports/<study_id>/<SAMPLE_ID or PATIENT_ID><CBIO_REPORT_SUFFIX>
+REPORTS=${CBIO_BUILD_REPORTS_DIR:-/reports}        # build input: reports/<study_id>/<SAMPLE_ID or PATIENT_ID><type suffix>
                                                    # (host: set to the active snapshot's reports/ by check_snapshot)
 CONF=${DATA}/config
 LOGS=${DATA}/logs
@@ -357,8 +360,7 @@ check_reports() {   # report settings used by start (gatekeeper) and build (URLs
     || die "CBIO_REPORTS_URL must start with http:// or https:// (cBioPortal resource URLs are absolute; got '${CBIO_REPORTS_URL}')"
   [[ "${CBIO_PORTAL_ORIGIN}" =~ ^https?://[A-Za-z0-9.-]+(:[0-9]+)?$ ]] \
     || die "CBIO_PORTAL_ORIGIN must look like https://host[:port] (got '${CBIO_PORTAL_ORIGIN}')"
-  [[ "${CBIO_REPORT_OPEN_BY_DEFAULT}" =~ ^(true|false)$ ]] \
-    || die "CBIO_REPORT_OPEN_BY_DEFAULT must be true or false (got '${CBIO_REPORT_OPEN_BY_DEFAULT}')"
+  [ -r "${CBIO_REPORT_TYPES}" ] || die "CBIO_REPORT_TYPES: ${CBIO_REPORT_TYPES} not found (config/report_types.tsv)"
   ## The gatekeeper only sees the portal session cookie when reports and portal share the host name
   if [ "${CBIO_AUTH}" == "oauth2" ]; then
     local rhost phost
@@ -519,7 +521,7 @@ start_webapp() {   # = cbioportal service
   wait_for "http_up http://127.0.0.1:${CBIO_PORT}/api/health" "cBioPortal webapp" "${WEB_PID}" 900
 }
 
-start_reports() {   # report gatekeeper: serves the snapshot's reports/ after asking the webapp (README "PCGR reports")
+start_reports() {   # report gatekeeper: serves the snapshot's reports/ after asking the webapp (README "Reports")
   python3 -I /app/reports_server.py \
     --port "${CBIO_REPORTS_PORT}" --portal-port "${CBIO_PORT}" \
     --reports-dir "${REPORTS}" --auth "${CBIO_AUTH}" \
@@ -795,20 +797,21 @@ report_refresh() {   # podman exec subcommands: try to refresh the running webap
 
 
 ################################################################################
-### PCGR reports -> cBioPortal "resources" (build only)
+### Reports (PCGR, ORANGE, ...: CBIO_REPORT_TYPES) -> cBioPortal "resources" (build only)
 ### Resources cannot be added incrementally, so they must be in the study at import time. The study
 ### folder (pipeline output) is never edited: a staging copy = symlinks to every study file + the
-### generated meta/data_resource_*.txt files is imported instead.
+### generated meta/data_resource_*.txt files is imported instead. One patient-view tab per report type
+### the study has reports for; the linking is cohort_plan.py's (= what the check showed).
 
 ## stage_reports <study_dir> <study_id> <folder_name>: sets IMPORT_DIR (= study_dir when there is nothing to add)
 stage_reports() {
   local study_dir=$1 study_id=$2 folder=$3 rdir=${REPORTS}/$2 stage entry rc=0
   IMPORT_DIR=${study_dir}
-  log "PCGR reports (${rdir}/*${CBIO_REPORT_SUFFIX})"
+  log "Reports (${rdir}/, types: ${CBIO_REPORT_TYPES})"
   if grep -qsE '^resource_type:' "${study_dir}"/*meta*.txt; then
     echo "The study folder already has resource files - using them, nothing generated"; return 0
   fi
-  if ! compgen -G "${rdir}/*${CBIO_REPORT_SUFFIX}" > /dev/null; then
+  if [ ! -d "${rdir}" ] || [ -z "$(ls -A "${rdir}" 2>/dev/null)" ]; then
     echo "No reports for ${study_id} - imported without report tabs"; return 0
   fi
 
@@ -816,101 +819,8 @@ stage_reports() {
   rm -rf "${stage}"; mkdir -p "${stage}"
   for entry in "${study_dir}"/*; do ln -s "${entry}" "${stage}/"; done
 
-  python3 - "${study_dir}" "${stage}" "${rdir}" "${study_id}" "${CBIO_REPORT_SUFFIX}" "${CBIO_REPORTS_URL%/}" \
-      "${CBIO_REPORT_NAME}" "${CBIO_REPORT_DESCRIPTION}" "${CBIO_REPORT_OPEN_BY_DEFAULT}" <<'PYEOF' || rc=$?
-import os, re, sys
-from collections import Counter
-from urllib.parse import quote
-study_dir, stage, rdir, study_id, suffix, base_url, name, desc, open_default = sys.argv[1:10]
-FILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*\.html$")    # = reports_server.py: other names are never served
-RID = "PCGR_REPORT"
-for v, what in ((name, "CBIO_REPORT_NAME"), (desc, "CBIO_REPORT_DESCRIPTION")):
-    if not v.strip() or re.search(r"[\t\r\n]", v):
-        sys.exit(f"ERROR: {what} must be non-empty and have no tabs / newlines")
-
-def meta(path):
-    out = {}
-    for line in open(path, encoding="utf-8"):
-        k, sep, v = line.partition(":")
-        if sep:
-            out[k.strip()] = v.strip()
-    return out
-
-## clinical sample file = the meta with datatype SAMPLE_ATTRIBUTES
-clin = None
-for f in sorted(os.listdir(study_dir)):
-    if "meta" in f and f.endswith(".txt") and os.path.isfile(os.path.join(study_dir, f)):
-        m = meta(os.path.join(study_dir, f))
-        if m.get("genetic_alteration_type") == "CLINICAL" and m.get("datatype") == "SAMPLE_ATTRIBUTES":
-            clin = os.path.join(study_dir, m["data_filename"])
-if not clin or not os.path.isfile(clin):
-    sys.exit("ERROR: no clinical sample file (meta with datatype: SAMPLE_ATTRIBUTES) - cannot link reports to samples")
-
-samples, header = [], None
-for line in open(clin, encoding="utf-8"):
-    if line.startswith("#") or not line.strip():
-        continue
-    row = line.rstrip("\r\n").split("\t")
-    if header is None:
-        header = row
-        if "PATIENT_ID" not in header or "SAMPLE_ID" not in header:
-            sys.exit(f"ERROR: {clin} has no PATIENT_ID / SAMPLE_ID columns")
-        ip, i_s = header.index("PATIENT_ID"), header.index("SAMPLE_ID")
-        continue
-    if len(row) <= max(ip, i_s) or not row[i_s].strip():
-        continue
-    samples.append((row[ip].strip(), row[i_s].strip()))
-
-## reports: regular files in rdir with the suffix and a name the gatekeeper serves
-reports, bad = set(), []
-for f in sorted(os.listdir(rdir)):
-    p = os.path.join(rdir, f)
-    if not f.endswith(suffix) or not os.path.isfile(p):
-        continue
-    if FILE_RE.match(f) and os.path.dirname(os.path.realpath(p)) == os.path.realpath(rdir):
-        reports.add(f)
-    else:
-        bad.append(f)
-
-rows, missing = [], []
-for patient, sample in samples:
-    hit = next((c for c in (sample + suffix, patient + suffix) if c in reports), None)
-    if hit:
-        rows.append((patient, sample, hit))
-    else:
-        missing.append(sample)
-used = Counter(r[2] for r in rows)
-
-print(f"Reports in {rdir}: {len(reports)}; samples in the study: {len(samples)}; linked: {len(rows)}")
-if missing:
-    print(f"  samples without a report ({len(missing)}): {', '.join(missing)}")
-unused = sorted(reports - set(used))
-if unused:
-    print(f"  reports matching no SAMPLE_ID / PATIENT_ID ({len(unused)}): {', '.join(unused)}")
-shared = sorted(f for f, n in used.items() if n > 1)
-if shared:
-    print(f"  WARNING: reports linked to more than one sample (PATIENT_ID match): {', '.join(shared)}")
-if bad:
-    print(f"  WARNING: not linked - name not served (letters, digits, _ . - only) or symlink out of the folder: {', '.join(bad)}")
-if not rows:
-    sys.exit(3)
-
-def write(fname, text):
-    with open(os.path.join(stage, fname), "x", encoding="utf-8") as fh:    # "x": never overwrite a study file
-        fh.write(text)
-
-write("meta_resource_definition.txt",
-      f"cancer_study_identifier: {study_id}\nresource_type: DEFINITION\ndata_filename: data_resource_definition.txt\n")
-write("data_resource_definition.txt",
-      "RESOURCE_ID\tDISPLAY_NAME\tRESOURCE_TYPE\tDESCRIPTION\tOPEN_BY_DEFAULT\tPRIORITY\n"
-      f"{RID}\t{name}\tSAMPLE\t{desc}\t{open_default}\t1\n")
-write("meta_resource_sample.txt",
-      f"cancer_study_identifier: {study_id}\nresource_type: SAMPLE\ndata_filename: data_resource_sample.txt\n")
-write("data_resource_sample.txt",
-      "PATIENT_ID\tSAMPLE_ID\tRESOURCE_ID\tURL\n"
-      + "".join(f"{p}\t{s}\t{RID}\t{base_url}/{quote(study_id, safe='')}/{quote(f, safe='')}\n" for p, s, f in rows))
-print(f"Resource files written to {stage}/ (the study folder is unchanged)")
-PYEOF
+  python3 -I "${COHORT_PLAN}" resources --study-dir "${study_dir}" --stage "${stage}" --reports-dir "${rdir}" \
+    --study-id "${study_id}" --base-url "${CBIO_REPORTS_URL%/}" --report-types "${CBIO_REPORT_TYPES}" || rc=$?
 
   case "${rc}" in
     0) IMPORT_DIR=${stage} ;;
@@ -1007,7 +917,7 @@ set_reports_dir() {
     REPORTS=${SNAP}/reports
   else
     REPORTS=${DATA}/reports_missing; mkdir -p "${REPORTS}"
-    echo "WARNING: ${SNAP}/reports not found - PCGR report tabs will answer 404"
+    echo "WARNING: ${SNAP}/reports not found - report tabs will answer 404"
   fi
 }
 
@@ -1127,10 +1037,12 @@ scheduled_sync() {
   echo "Sync done (${result}), serving ${ACTIVE_ID}"
 }
 
-## publish_snapshot <plan> [<base id>]: build - copy the stopped DB + reports + logs to SNAPSHOTS/<id>.partial, rename,
-## READY last. Reports: imported cohorts from /reports, kept cohorts from the base snapshot (same files, same fingerprint).
+## publish_snapshot <plan>: build - copy the stopped DB + reports + logs to SNAPSHOTS/<id>.partial, rename, READY last.
+## Reports (cohort_plan.py snapshot-reports): a file unchanged since the base snapshot (CURRENT for a full build) is
+## hard-linked from it - kept cohorts entirely, unchanged files of rebuilt ones - the rest is copied from /reports.
+## Snapshots never change once READY, so the links are safe, and the ORANGE PDFs (~8 MB each) are stored once.
 publish_snapshot() {
-  local plan=$1 base=${2:-} final part sid n
+  local plan=$1 final part
   final=${SNAPSHOTS}/${CBIO_SNAPSHOT_ID}
   part=${final}.partial
   log "Publish snapshot ${final}"
@@ -1138,20 +1050,8 @@ publish_snapshot() {
   cp_db "${DATA}/clickhouse" "${part}/clickhouse"
   rm -f "${part}/clickhouse/status" "${part}/clickhouse/.snapshot_id"
   mkdir -p "${part}/reports" "${part}/logs"
-  for sid in "${IMPORTED_IDS[@]}"; do
-    [ -d "${REPORTS}/${sid}" ] || continue
-    mkdir -p "${part}/reports/${sid}"
-    find "${REPORTS}/${sid}" -maxdepth 1 -type f -name '*.html' -exec cp -t "${part}/reports/${sid}/" {} +
-    n=$(find "${part}/reports/${sid}" -maxdepth 1 -type f | wc -l)
-    echo "reports/${sid}: ${n} file(s)"
-  done
-  for sid in "${KEPT_IDS[@]}"; do
-    [ -d "${SNAPSHOTS}/${base}/reports/${sid}" ] || continue
-    mkdir -p "${part}/reports/${sid}"
-    find "${SNAPSHOTS}/${base}/reports/${sid}" -maxdepth 1 -type f -name '*.html' -exec cp -p -t "${part}/reports/${sid}/" {} +
-    n=$(find "${part}/reports/${sid}" -maxdepth 1 -type f | wc -l)
-    echo "reports/${sid}: ${n} file(s) (kept from ${base})"
-  done
+  python3 -I "${COHORT_PLAN}" snapshot-reports --plan "${plan}" --reports "${REPORTS}" --snapshots "${SNAPSHOTS}" \
+    --out "${part}/reports" || die "could not put the reports into ${part}/reports"
   cp "${LOGS}"/import_*.log "${LOGS}"/import_validation_*.html "${LOGS}"/remove_*.log "${LOGS}/dumpPortalInfo.log" "${part}/logs/" 2>/dev/null || true
   cp "${plan}" "${part}/logs/plan.json"
   cp "${CONF}/studies.tsv" "${part}/studies.tsv"             # written by ch_studies_tsv while ClickHouse was up
@@ -1336,7 +1236,7 @@ import_study() {
   java ${CBIO_IMPORT_JAVA_OPTS} -cp "${IMPORTER_JAR}" org.mskcc.cbio.portal.scripts.DumpPortalInfo "${PORTALINFO}" \
     > "${LOGS}/dumpPortalInfo.log" 2>&1 || die "DumpPortalInfo failed - see ${LOGS}/dumpPortalInfo.log"
 
-  ## PCGR reports -> resource files in a staging copy (sets IMPORT_DIR; = study_dir when there are none)
+  ## Reports (PCGR, ORANGE, ...) -> resource files in a staging copy (sets IMPORT_DIR; = study_dir when there are none)
   stage_reports "${study_dir}" "${study_id}" "${study}"
 
   ## = docker compose run cbioportal metaImport.py -u http://cbioportal:8080 -s study/... -o
@@ -1361,12 +1261,13 @@ import_study() {
 ### Incremental builds (README "Incremental builds"): cohort = one folder of /studies = one cBioPortal study
 
 plan_config() {   # the settings a snapshot depends on: any change between CURRENT and now -> full rebuild
+  local types
+  types=$(python3 -I "${COHORT_PLAN}" types-digest --report-types "${CBIO_REPORT_TYPES}") \
+    || die "the report types (${CBIO_REPORT_TYPES}) are not valid - see above"
   python3 -I -c 'import json, sys
-keys = ["cbio_version", "image_id", "reports_url", "report_suffix", "report_name", "report_description",
-        "report_open_by_default", "data_dir"]
+keys = ["cbio_version", "image_id", "reports_url", "report_types", "data_dir"]
 print(json.dumps(dict(zip(keys, sys.argv[1:])), sort_keys=True))' \
-    "${CBIO_VERSION}" "${CBIO_IMAGE_ID}" "${CBIO_REPORTS_URL}" "${CBIO_REPORT_SUFFIX}" "${CBIO_REPORT_NAME}" \
-    "${CBIO_REPORT_DESCRIPTION}" "${CBIO_REPORT_OPEN_BY_DEFAULT}" "${DATA}"
+    "${CBIO_VERSION}" "${CBIO_IMAGE_ID}" "${CBIO_REPORTS_URL}" "${types}" "${DATA}"
 }
 
 remove_study() {   # remove_study <study_id>: cBioPortal's own remove-study (what metaImport.py runs before every import)
@@ -1404,7 +1305,7 @@ compact_db() {   # incremental build: drop the rows that remove-study deleted (l
 ## check [<plan>]: builder side (deploy/c3g-cbioportal-check.sh) - what changed in the drop folder since CURRENT.
 ## Writes the plan for `build`; exit 0 = build, 3 = nothing changed, 10 = build that removes cohorts.
 do_check() {
-  local out=$1 rc=0
+  local out=$1 rc=0 config
   local -a full=()
   [ "${CBIO_VERSION}" != "unknown" ] || die "CBIO_VERSION is not set in the image (Containerfile ENV)"
   [ "${CBIO_IMAGE_ID}" != "unknown" ] || die "CBIO_IMAGE_ID is not set - run deploy/c3g-cbioportal-check.sh"
@@ -1417,14 +1318,16 @@ do_check() {
   check_reports
   [ "${CBIO_FULL_BUILD}" != "true" ] || full=(--full)
   log "Check: drop folder vs CURRENT (next snapshot id: ${CBIO_SNAPSHOT_ID})"
-  python3 -I "${COHORT_PLAN}" plan --studies "${STUDIES}" --reports "${REPORTS}" --snapshots "${SNAPSHOTS}" \
-    --config "$(plan_config)" --snapshot-id "${CBIO_SNAPSHOT_ID}" --out "${out}" "${full[@]}" || rc=$?
+  config=$(plan_config)
+  python3 -I "${COHORT_PLAN}" plan --studies "${STUDIES}" --reports "${REPORTS}" --report-types "${CBIO_REPORT_TYPES}" \
+    --snapshots "${SNAPSHOTS}" --config "${config}" --snapshot-id "${CBIO_SNAPSHOT_ID}" --out "${out}" \
+    ${full[@]+"${full[@]}"} || rc=$?
   exit "${rc}"
 }
 
 ## build <plan>: builder pod - the plan made by `check` (deploy/c3g-cbioportal-check.sh, then deploy/c3g-cbioportal-build.sh)
 do_build() {
-  local plan=${1:-} key a b mode="" base="" psnap="" msg sid folder want have i=0
+  local plan=${1:-} key a b mode="" base="" psnap="" msg sid folder want have config i=0
   local -a imports=() import_ids=() removes=()
   KEPT_IDS=()
   [ -n "${plan}" ] && [ -s "${plan}" ] \
@@ -1476,8 +1379,9 @@ do_build() {
 
   ## The drop folder may have changed since the check: the cohorts to import must still match the plan
   log "Plan check"
+  config=$(plan_config)
   python3 -I "${COHORT_PLAN}" verify --plan "${plan}" --studies "${STUDIES}" --reports "${REPORTS}" \
-    --config "$(plan_config)" --snapshot-id "${CBIO_SNAPSHOT_ID}" \
+    --report-types "${CBIO_REPORT_TYPES}" --config "${config}" --snapshot-id "${CBIO_SNAPSHOT_ID}" \
     || die "the drop folder or the settings changed since the check - run deploy/c3g-cbioportal-check.sh again"
   if [ "${mode}" == "incremental" ]; then
     msg=$(validate_snapshot "${base}") || die "base snapshot: ${msg}"
@@ -1527,7 +1431,7 @@ do_build() {
   stop_service "${CH_PID}" "ClickHouse" 120; CH_PID=""     # clean stop before the DB folder is copied
 
   log "5/5 Publish"
-  publish_snapshot "${plan}" "${base}"
+  publish_snapshot "${plan}"
   trap - EXIT TERM INT
   log "Build done (${mode}): ${SNAPSHOTS}/${CBIO_SNAPSHOT_ID}
  Put it live: deploy/c3g-cbioportal-promote.sh ${CBIO_SNAPSHOT_ID} (shows what changes, asks, writes CURRENT);
@@ -1588,9 +1492,13 @@ do_promote() {
   fi
 
   echo
-  python3 -I - "${SNAPSHOTS}" "${cur}" "${id}" "${CBIO_ADMIN_GROUP}" "${CBIO_AUTHZ}" <<'PYEOF' || rc=$?
+  python3 -I - "${SNAPSHOTS}" "${cur}" "${id}" "${CBIO_ADMIN_GROUP}" "${CBIO_AUTHZ}" "${COHORT_PLAN}" \
+      "${CBIO_REPORT_TYPES}" <<'PYEOF' || rc=$?
 import json, os, sys
-root, cur, new, admin, authz = sys.argv[1:6]
+root, cur, new, admin, authz, cohort_plan_py, types_file = sys.argv[1:8]
+sys.path.insert(0, os.path.dirname(cohort_plan_py))
+import cohort_plan
+TYPES = cohort_plan.load_report_types(types_file)
 if authz == "opa":
     print("  (groups = meta_study.txt 'groups:' as built. With CBIO_AUTHZ=opa the host replaces them with OPA's")
     print("   decision at every sync: a study missing from c3g_cbioportal/data.json is HIDDEN on the host)\n")
@@ -1606,8 +1514,11 @@ def load(sid):
     return {s["study_id"]: s for s in info.get("studies", []) if "study_id" in s}
 
 def reports(sid, study):
+    """'PCGR 20, ORANGE 20' (files per report type in the snapshot), '0' when none"""
     d = os.path.join(root, sid, "reports", study)
-    return len([f for f in os.listdir(d) if f.endswith(".html")]) if os.path.isdir(d) else 0
+    by_type = cohort_plan.type_names(os.listdir(d) if os.path.isdir(d) else [], TYPES)
+    return ", ".join(f"{t['label']} {len(by_type[t['RESOURCE_ID']])}" for t in TYPES
+                     if by_type[t["RESOURCE_ID"]]) or "0"
 
 old, nxt = load(cur), load(new)
 removed = sorted(set(old) - set(nxt))
@@ -1759,9 +1670,8 @@ esac
 
 ### How to run: ###
 # (full commands in README.md; <shared> = the data drop folder on the VM, seen by both pods)
-# --- Builder pod: one folder per study in <shared>/studies/, its PCGR reports in <shared>/reports/<study_id>/
-# cp -r <study_folder> <shared>/studies/
-# mkdir -p <shared>/reports/<cancer_study_identifier> && cp <group>.pcgr_acmg.grch38.flexdb.html ... <shared>/reports/<cancer_study_identifier>/
+# --- Builder pod: one folder per study in <shared>/studies/, its PCGR / ORANGE reports in <shared>/reports/<study_id>/
+# SHARED=<shared> ./deploy/c3g-cbioportal-add.sh <study_folder> <oncoanalyser_output> [<pcgr_output>]   # both in one go
 # ./deploy/c3g-cbioportal-check.sh                             # what changed since CURRENT, asks y/N, then builds
 #                                                              #   only the new / changed cohorts (FULL=true: all)
 # ./deploy/c3g-cbioportal-promote.sh <id>                      # shows the change, asks, writes <shared>/snapshots/CURRENT

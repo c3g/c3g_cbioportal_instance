@@ -10,7 +10,7 @@
 ### plan this script takes (README "Incremental builds"). One-off container (same image as the host pod), ClickHouse
 ### on LOCAL scratch:
 ###   incremental: copy of CURRENT's database -> remove the REMOVED cohorts -> re-import each NEW / CHANGED cohort
-###                whole (+ PCGR report tabs) -> compact;
+###                whole (+ PCGR / ORANGE report tabs) -> compact;
 ###   full:        empty database -> schema + seed -> import every cohort;
 ### -> stop ClickHouse -> publish <shared>/snapshots/<id>/ (READY written last). The build first checks that the
 ### cohorts to import did not change since the check. Put it live with deploy/c3g-cbioportal-promote.sh <id>
@@ -19,7 +19,7 @@
 ###
 ### <shared> layout (the data drop folder on this VM, seen by both pods):
 ###   studies/<folder>/            one folder per cBioPortal study (cohort)  -> /studies   (read-only)
-###   reports/<study_id>/*.html    PCGR flexdb reports                       -> /reports   (read-only)
+###   reports/<study_id>/<files>   PCGR / ORANGE reports (report_types.tsv)  -> /reports   (read-only)
 ###   snapshots/<id>/              written by this script only               -> /snapshots (host pod: read-only)
 ################################################################################
 set -euo pipefail
