@@ -199,7 +199,7 @@ systemctl --user stop c3g-cbioportal-pod.service             # the whole host po
 - **Base = `CURRENT`**, the snapshot being served, never a newer unpromoted one. If you built a snapshot but didn't promote it, the next check compares against `CURRENT` again, so that snapshot's changes are included again.
 - **The plan:** `<SCRATCH_ROOT>/plans/<snapshot id>.json` (+ `.check.log`), copied into the snapshot as `logs/plan.json`. Before importing, the build re-checks the fingerprints of the cohorts to import and the image. If either changed since the check, it stops: run the check again.
 - **Check that the build matches the plan:** after the imports, the studies in the database must be exactly the plan's imported + kept cohorts, or the build fails.
-- **Time:** a build costs about one changed cohort instead of all of them. With today's converter that's ~1 min per sample of the cohort: ~75 min for an ~80-sample cohort, against ~11–12 h for a full build at 700 samples ([Resources](#resources)).
+- **Time:** a build costs about one changed cohort instead of all of them. With today's converter that's ~1 min per sample of the cohort: ~20 min for a ~20-sample cohort, against ~16–17 h for a full build at 1,000 samples ([Resources](#resources)).
 - **Removing a study needs a ClickHouse cluster named `default`.** cBioPortal's remove-study (`ClickHouseBulkDeleter`) checks every replica with `clusterAllReplicas('default', ...)`. [`config/clickhouse-config.xml`](config/clickhouse-config.xml) defines it as this one server; without it a changed or removed cohort fails with "Requested cluster 'default' not found". Full builds never remove anything, so they don't need it.
 - **Tested on a laptop (2026-11-27, public datahub studies):**
   - a full build;
@@ -523,23 +523,24 @@ studies/                              build (builder pod)                       
 - Every build adds a full snapshot to `snapshots/`, and old ones are only deleted by hand. With these 3 studies that's ~138 MB per build.
 - To check the space used: `du -sh <shared>/snapshots/*`.
 
-### Projection: 700 samples in ~9 cohorts, a build every ~5 new samples
+### Projection: 1,000 samples in ~50 cohorts, a build every ~5 new samples
 
-Extrapolated from the Cardinal numbers above (~78 samples per cohort, close to the 86-sample study). Not measured.
+Extrapolated from the Cardinal numbers above (~20 samples per cohort). Not measured.
 
 | | Projection |
 |---|---|
-| Builds over the project | 700 / 5 ≈ **140** |
-| Full build at 700 samples, current converter | ~1 min per sample (almost all `data_cna_long.txt`) → **~11–12 h** |
-| Incremental build (5 samples added to one ~80-sample cohort) | that cohort re-imported whole → **~75 min** |
-| Builder memory | per study, not the sum: studies import one after the other, so ~3 GB real per ~80-sample cohort |
+| Builds over the project | 1,000 / 5 ≈ **200** |
+| Full build at 1,000 samples, current converter | ~1 min per sample (almost all `data_cna_long.txt`) → **~16–17 h** |
+| Incremental build (5 samples added to one ~20-sample cohort) | that cohort re-imported whole → **~20–25 min** |
+| Builder memory | per study, not the sum: studies import one after the other, so ~2–3 GB real per ~20-sample cohort (the 1-sample study already used 2.1 GB) |
 | Builder CPU | ~1 core (single-threaded import), 2.5 at most |
-| Snapshot at 700 samples | ~1–1.5 GB (~1.6 MB per sample) |
-| Snapshots if never deleted | the sum over 140 growing builds ≈ **80–100 GB**, plus the same again in build scratch |
-| Host `/data` | 2 × one snapshot (`clickhouse/` + `clickhouse.prev/`) + MongoDB + logs ≈ 5 GB |
+| Snapshot at 1,000 samples | ~1.5–2 GB (~1.6 MB per sample) |
+| Snapshots if never deleted | the sum over 200 growing builds ≈ **150–200 GB**, plus the same again in build scratch |
+| Host `/data` | 2 × one snapshot (`clickhouse/` + `clickhouse.prev/`) + MongoDB + logs ≈ 6 GB |
 
-- **Build time:** incremental builds keep the usual build at about one cohort (~75 min). A full build (first build, image upgrade, `FULL=true`) takes the whole ~11–12 h at 700 samples, so plan image upgrades for a quiet period. A second build is refused while one runs. The portal is not slowed down either way: the builder has its own cores.
-- **Disk:** keep `CURRENT` + ~2 older snapshots for rollback, and remove each `build_<id>/` scratch after a good build. That's ~5 GB of snapshots at 700 samples.
+- **Build time:** incremental builds keep the usual build at about one cohort (~20–25 min). A full build (first build, image upgrade, `FULL=true`) takes the whole ~16–17 h at 1,000 samples, so plan image upgrades for a quiet period. A second build is refused while one runs. The portal is not slowed down either way: the builder has its own cores.
+- **Not yet measured:** after each import, the derived tables are rebuilt for **all** studies. That step wasn't timed separately, so with ~50 cohorts it may add a fixed cost to every incremental build on top of the ~20–25 min.
+- **Disk:** keep `CURRENT` + ~2 older snapshots for rollback, and remove each `build_<id>/` scratch after a good build. That's ~5–6 GB of snapshots at 1,000 samples. Never deleting them (~150–200 GB) would not fit on the ~100 GB data disk ([VM size](#vm-size-and-how-it-is-split)).
 
 ### VM size and how it is split
 
