@@ -1,0 +1,53 @@
+# systemd user unit for the HOST POD (portal + its OPA), in the web-app-template unit style
+# (`podman generate systemd --new` shape for a pod). One VM runs two pods (README "How it works"):
+#   host pod    c3g-cbioportal        this unit + c3g-cbioportal-opa.service + c3g-cbioportal.service, always on
+#   builder pod c3g-cbioportal-build  made by deploy/c3g-cbioportal-build.sh for one build, then removed
+# The host pod has no resource cap: the builder is the one that is capped (own cores, memory limit, killed first
+# on low memory), so a build can never take from the portal.
+# Additions to the template, all marked "c3g_cbioportal_instance:":
+#   pod instead of a single container -> the portal and its OPA share one network namespace (OPA = 127.0.0.1:8181)
+#   ports on the pod                  -> 8080 portal, 8090 PCGR report gatekeeper, 127.0.0.1:8181 OPA
+#   TimeoutStopSec + pod stop -t 300  -> time for the portal's ordered shutdown (ClickHouse last, cleanly)
+# Install (as genome, via `sudo machinectl shell genome@`), with the two member units:
+#   cp c3g-cbioportal-pod.service c3g-cbioportal-opa.service c3g-cbioportal.service ~/.config/systemd/user/.
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now c3g-cbioportal-pod.service    # starts OPA, then the portal
+## CHANGE HERE - ASK ## host ports 8080 / 8090 (-p below): agree them with the maintainer
+## CHANGE HERE - ASK ## host port 8181 (-p 127.0.0.1:8181): OPA, for curl checks on the VM and the optional build
+##                      warnings (OPA_URL=http://10.0.2.2:8181); another app's OPA may already use it
+[Unit]
+Description=C3G cBioPortal host pod (c3g_cbioportal_instance)
+Documentation=man:podman-generate-systemd(1)
+Documentation=https://github.com/c3g/c3g_cbioportal_instance
+Wants=network-online.target
+After=network-online.target
+RequiresMountsFor=%t/containers
+# c3g_cbioportal_instance: the pod's two containers
+Wants=c3g-cbioportal-opa.service c3g-cbioportal.service
+Before=c3g-cbioportal-opa.service c3g-cbioportal.service
+
+[Service]
+Environment=PODMAN_SYSTEMD_UNIT=%n
+Restart=on-failure
+# c3g_cbioportal_instance: ordered shutdown of the portal needs up to ~5 min
+TimeoutStopSec=330
+ExecStartPre=/bin/rm -f %t/c3g-cbioportal-pod.pid %t/c3g-cbioportal-pod.pod-id
+## CHANGE HERE - ASK ## host ports below
+ExecStartPre=/usr/bin/podman pod create \
+	--infra-conmon-pidfile %t/c3g-cbioportal-pod.pid \
+	--pod-id-file %t/c3g-cbioportal-pod.pod-id \
+	--exit-policy=stop \
+	--replace \
+	--name c3g-cbioportal \
+	--network slirp4netns:allow_host_loopback=true \
+	-p 127.0.0.1:8181:8181 \
+	-p 8090:8090 \
+	-p 8080:8080
+ExecStart=/usr/bin/podman pod start --pod-id-file %t/c3g-cbioportal-pod.pod-id
+ExecStop=/usr/bin/podman pod stop --ignore --pod-id-file %t/c3g-cbioportal-pod.pod-id -t 300
+ExecStopPost=/usr/bin/podman pod rm --ignore -f --pod-id-file %t/c3g-cbioportal-pod.pod-id
+PIDFile=%t/c3g-cbioportal-pod.pid
+Type=forking
+
+[Install]
+WantedBy=default.target

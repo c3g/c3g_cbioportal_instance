@@ -31,6 +31,24 @@
     </user_directories>
     <default_profile>default</default_profile>
 
+    <!-- cBioPortal's importer removes a study (remove-study, and metaImport.py before every re-import) through
+         ClickHouseBulkDeleter, which checks every replica with clusterAllReplicas('default', ...). The official
+         ClickHouse image's default config defines that cluster; this minimal config must define it too:
+         one shard, one replica = this server, as cbio_user. Without it: "Requested cluster 'default' not found"
+         (Code: 701) and incremental builds fail at the first changed cohort. -->
+    <remote_servers>
+        <default>
+            <shard>
+                <replica>
+                    <host>127.0.0.1</host>
+                    <port from_env="CH_NATIVE_PORT"/>
+                    <user>cbio_user</user>
+                    <password from_env="CLICKHOUSE_PASSWORD"/>
+                </replica>
+            </shard>
+        </default>
+    </remote_servers>
+
     <max_server_memory_usage from_env="CH_MAX_MEMORY"/>
     <mlock_executable>false</mlock_executable>
 

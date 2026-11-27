@@ -6,24 +6,34 @@
 ###   ClickHouse -> schema/seed/derived tables (first launch only) -> schema migration
 ###   -> mongod -> session-service -> cBioPortal webapp (login through OIDC) -> report gatekeeper
 ###
-### One image, two roles (README "Build VM" / "Host VM"):
-###   BUILD VM  `build` imports the studies into a fresh ClickHouse DB on local scratch (/data) and publishes it
-###             as a snapshot on the shared SD4H storage (/snapshots/<id>/). Never serves anything.
-###   HOST VM   `start` copies the snapshot named by CBIO_DB_SNAPSHOT (read-only mount /snapshots) onto its local
-###             /data/clickhouse and serves it. Never imports. ClickHouse never runs on the shared storage.
+### One image, two roles, in two podman pods on ONE VM (README "How it works"):
+###   BUILDER POD  `check` compares the drop folder (/studies, /reports) with CURRENT -> a plan; `build` imports the
+###                plan's NEW / CHANGED cohorts into a ClickHouse DB on local scratch (/data) and publishes it
+###                as a snapshot in the data drop folder (/snapshots/<id>/). Never serves anything. Capped
+###                (own cores, memory limit) by deploy/c3g-cbioportal-build.sh so it never takes from the host.
+###   HOST POD     `start` copies the snapshot named by CBIO_DB_SNAPSHOT (read-only mount /snapshots) onto its local
+###                /data/clickhouse and serves it. Never imports. ClickHouse never runs in the drop folder.
 ###             CBIO_DB_SNAPSHOT=current: serve the snapshot named in /snapshots/CURRENT (moved by `promote`) and,
 ###             at every CBIO_SYNC_TIMES (06:00 + 18:00), switch to it IN PLACE when it changed (no container restart).
 ###
 ### Subcommands:
-###   build <manifest>  (Build VM, one-off `podman run --rm`) manifest = one study folder of /studies per line.
-###                     Empty DB -> schema + seed -> offline-validate + import every study -> stop ClickHouse ->
-###                     publish /snapshots/<id>/ {clickhouse/, reports/, logs/, BUILD_INFO.json, READY (last)}.
+###   check [<plan>]    (deploy/c3g-cbioportal-check.sh) cohort = every folder of /studies (one cBioPortal study each)
+###                     + /reports/<study_id>/. Fingerprints them, compares with CURRENT's (BUILD_INFO.json), prints
+###                     NEW / CHANGED / SAME / REMOVED and writes the plan (cohort_plan.py; default /plan/plan.json).
+###                     Exit 0 = build, 3 = nothing changed, 10 = build that removes cohorts.
+###   build <plan>      (builder pod, one-off `podman run --rm`; deploy/c3g-cbioportal-build.sh) checks the plan still
+###                     matches the drop folder, then
+###                       incremental: copy of CURRENT's DB -> remove-study for REMOVED cohorts -> re-import NEW /
+###                                    CHANGED cohorts whole (metaImport removes the old version first) -> compact;
+###                       full:        empty DB -> schema + seed -> import every cohort;
+###                     -> offline validation per cohort -> stop ClickHouse -> publish /snapshots/<id>/
+###                     {clickhouse/, reports/, logs/, BUILD_INFO.json (+ cohort fingerprints), READY (last)}.
 ###                     Reports in /reports/<study_id>/ (PCGR flexdb HTML) are linked to their samples as cBioPortal
 ###                     "resources" (generated in a staging copy; the study folder is not changed) and copied in.
-###   start             (Host VM, default CMD) activate CBIO_DB_SNAPSHOT, then start every service, webapp + report
+###   start             (host pod, default CMD) activate CBIO_DB_SNAPSHOT, then start every service, webapp + report
 ###                     gatekeeper last. On SIGTERM (podman stop) stops reports -> webapp -> session -> mongod -> ClickHouse.
 ###                     At each CBIO_SYNC_TIMES: snapshot check (follow CURRENT) + access sync + cache refresh.
-###   promote <id> [--yes]  (Build VM, deploy/c3g-cbioportal-promote.sh; /snapshots read-write) show what changes
+###   promote <id> [--yes]  (builder side, deploy/c3g-cbioportal-promote.sh; /snapshots read-write) show what changes
 ###                     against /snapshots/CURRENT (studies added / removed, groups), ask, then write CURRENT.
 ###                     The host switches at its next sync time (or `sync-now`). Rollback = promote the old id.
 ###   snapshots         list the snapshots in /snapshots (READY, cBioPortal version, studies, CURRENT, active one)
@@ -52,7 +62,7 @@
 ###             Host:  clickhouse/ (active snapshot copy, .snapshot_id), clickhouse.prev/, mongo/, config/, logs/
 ###                    (logs/sync.log = every scheduled sync, logs/snapshot_switch.log = one line per switch)
 ###             Build: clickhouse/, config/ (staging/, importer JAR), logs/, portalinfo/  (scratch, one per build)
-###           /snapshots (CBIO_SNAPSHOTS_DIR) = shared SD4H storage: builder writes, host mounts read-only.
+###           /snapshots (CBIO_SNAPSHOTS_DIR) = <shared>/snapshots in the data drop folder: builder writes, host reads only.
 ###             /snapshots/CURRENT = the snapshot id the host should serve (written only by `promote`; log: promote.log).
 ###           Build inputs (read-only): /studies/<folder>/ (pipeline output), /reports/<study_id>/ (PCGR HTML).
 ################################################################################
@@ -78,7 +88,7 @@ CBIO_SYNC_TIMES=${CBIO_SYNC_TIMES:-06:00 18:00}    # host: local times (TZ) of t
 CBIO_SYNC_SECS_OLD=${CBIO_SYNC_SECS:-}             # replaced by CBIO_SYNC_TIMES (an old unit still setting it gets a warning)
 ## CBIO_AUTHZ=opa - README "Who can see what"
 OPA_URL_FROM_ENV=${OPA_URL:-}                      # build: OPA is only asked (warning only) when OPA_URL is passed
-OPA_URL=${OPA_URL:-http://10.0.2.2:8181}           # the app's own OPA container (host loopback, slirp4netns)
+OPA_URL=${OPA_URL:-http://127.0.0.1:8181}          # the app's own OPA container (same host pod = same localhost)
 OPA_POLICY_PATH=${OPA_POLICY_PATH:-c3g_cbioportal/authz}   # Rego package c3g_cbioportal.authz
 OPA_DENY_GROUP=${OPA_DENY_GROUP:-C3G_OPA_DENY}     # written to studies OPA does not allow - never create it in COmanage
 ## CBIO_AUTHZ=cbioportal (OFF for now, code kept)
@@ -117,12 +127,15 @@ if [ -z "${CBIO_PORTAL_ORIGIN:-}" ] && [[ "${CBIO_REPORTS_URL}" =~ ^(https?://[^
 fi
 CBIO_PORTAL_ORIGIN=${CBIO_PORTAL_ORIGIN:-}
 
-## CHANGE HERE ## build / snapshot hand-off (README "Build VM" / "Host VM")
-SNAPSHOTS=${CBIO_SNAPSHOTS_DIR:-/snapshots}        # shared SD4H storage: builder writes, host mounts read-only
+## CHANGE HERE ## build / snapshot hand-off (README "How it works")
+SNAPSHOTS=${CBIO_SNAPSHOTS_DIR:-/snapshots}        # <shared>/snapshots: builder pod writes, host pod mounts read-only
 CBIO_DB_SNAPSHOT=${CBIO_DB_SNAPSHOT:-}            # host: 'current' = follow SNAPSHOTS/CURRENT (switch in place at
                                                    # CBIO_SYNC_TIMES) | <id> = pinned to that snapshot (never switches)
 CBIO_SNAPSHOT_ID=${CBIO_SNAPSHOT_ID:-$(date '+%Y%m%d-%H%M%S')}   # build: id of the snapshot it publishes
 CBIO_IMAGE_REF=${CBIO_IMAGE_REF:-unknown}          # build: image tag, recorded in BUILD_INFO.json
+CBIO_IMAGE_ID=${CBIO_IMAGE_ID:-unknown}            # check/build: image id (podman image inspect); another image
+                                                   # than CURRENT's (= image upgrade) -> full rebuild
+CBIO_FULL_BUILD=${CBIO_FULL_BUILD:-false}          # check: true = plan a FULL rebuild (empty DB, every cohort)
 CBIO_VERSION=${CBIO_VERSION:-unknown}              # set by the Containerfile (ENV); build and host must match
 
 ## Fixed paths / names (DATA itself can be moved with CBIO_DATA_DIR - same value in both roles)
@@ -162,7 +175,9 @@ NEXT_SYNC_FILE=${CONF}/.next_sync                  # host: time of the next sche
 FAILED_SWITCH_FILE=${CONF}/.failed_snapshot        # host: snapshot id whose switch failed (not retried: snapshots never change)
 study_id=""                                        # set by import_study
 IMPORTED_IDS=()                                    # build: cancer_study_identifier of every imported study
+KEPT_IDS=()                                        # build: cohorts kept as they are from the base snapshot (incremental)
 STUDY_SUMMARY=${CONF}/build_studies.tsv            # build: <folder> TAB <study_id>, one line per imported study
+COHORT_PLAN=/app/cohort_plan.py                    # check/build: cohort fingerprints + plan (README "Incremental builds")
 
 
 ################################################################################
@@ -296,7 +311,7 @@ check_auth() {
     false)
       echo -e "\n !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
       echo " WARNING: CBIO_AUTH=false - NO LOGIN, every study is visible to anyone who can reach port ${CBIO_PORT}."
-      echo " Local testing only. Never use this on the webapp VM."
+      echo " Local testing only. Never use this on the VM."
       echo -e " !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"
       ;;
     *) die "CBIO_AUTH must be 'oauth2' or 'false' (got '${CBIO_AUTH}')" ;;
@@ -906,7 +921,7 @@ PYEOF
 
 
 ################################################################################
-### Snapshots (README "Build VM" / "Host VM")
+### Snapshots (README "How it works")
 ### A snapshot = /snapshots/<id>/ {clickhouse/ (stopped DB), reports/<study_id>/, logs/, BUILD_INFO.json, READY}.
 ### Written once by `build` (as <id>.partial, renamed, READY last), never changed afterwards. The host only reads
 ### it: it serves a local COPY in /data/clickhouse, so its own writes (migration, OPA groups) never reach it.
@@ -932,7 +947,7 @@ validate_snapshot() {
   built_with=$(python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1])).get("cbio_version", ""))' "${snap}/BUILD_INFO.json") \
     || { echo "${snap}/BUILD_INFO.json is not readable JSON"; return 1; }
   [ "${built_with}" == "${CBIO_VERSION}" ] || { echo "snapshot ${id} was built with cBioPortal '${built_with}', this image is '${CBIO_VERSION}'.
-       Rebuild it on the Build VM with the same image tag as the host."; return 1; }
+       Rebuild it (deploy/c3g-cbioportal-build.sh) with the same image tag as the host."; return 1; }
   ## ClickHouse's symlinks are absolute: the snapshot only works at the DATA path it was built at
   link=$(readlink "${snap}/clickhouse/metadata/${CH_DB}" || true)
   [[ "${link}" == "${DATA}/clickhouse/"* ]] || { echo "snapshot links point to '${link}', not ${DATA}/clickhouse/ -
@@ -955,7 +970,7 @@ read_current() {
 ##            already in /data/clickhouse (warning) - only with no local copy at all the host cannot start.
 check_snapshot() {
   local id msg local_id
-  [ -n "${CBIO_DB_SNAPSHOT}" ] || die "CBIO_DB_SNAPSHOT is not set. This container only serves snapshots made on the Build VM:
+  [ -n "${CBIO_DB_SNAPSHOT}" ] || die "CBIO_DB_SNAPSHOT is not set. This container only serves snapshots made by the builder pod:
        -e CBIO_DB_SNAPSHOT=current (follow ${POINTER}, moved by promote) or -e CBIO_DB_SNAPSHOT=<id> (pinned)"
   if [ "${CBIO_DB_SNAPSHOT,,}" != "current" ]; then
     msg=$(validate_snapshot "${CBIO_DB_SNAPSHOT}") || die "${msg}"
@@ -973,7 +988,7 @@ check_snapshot() {
     else
       if [ -n "${failed:-}" ]; then :
       elif [ -n "${id:-}" ]; then msg="CURRENT=${id}: ${msg}"
-      else msg="${POINTER} missing or empty - run promote on the Build VM"; fi
+      else msg="${POINTER} missing or empty - run deploy/c3g-cbioportal-promote.sh"; fi
       local_id=$(cat "${DATA}/clickhouse/.snapshot_id" 2>/dev/null || true)
       [ -n "${local_id}" ] && [ -d "${DATA}/clickhouse/metadata" ] || die "${msg}
        and there is no local copy to serve yet (${DATA}/clickhouse). Promote a snapshot, then start again."
@@ -1112,15 +1127,16 @@ scheduled_sync() {
   echo "Sync done (${result}), serving ${ACTIVE_ID}"
 }
 
-## publish_snapshot <manifest>: build - copy the stopped DB + reports + logs to SNAPSHOTS/<id>.partial, rename, READY last
+## publish_snapshot <plan> [<base id>]: build - copy the stopped DB + reports + logs to SNAPSHOTS/<id>.partial, rename,
+## READY last. Reports: imported cohorts from /reports, kept cohorts from the base snapshot (same files, same fingerprint).
 publish_snapshot() {
-  local manifest=$1 final part sid n
+  local plan=$1 base=${2:-} final part sid n
   final=${SNAPSHOTS}/${CBIO_SNAPSHOT_ID}
   part=${final}.partial
   log "Publish snapshot ${final}"
   mkdir "${part}"
   cp_db "${DATA}/clickhouse" "${part}/clickhouse"
-  rm -f "${part}/clickhouse/status"
+  rm -f "${part}/clickhouse/status" "${part}/clickhouse/.snapshot_id"
   mkdir -p "${part}/reports" "${part}/logs"
   for sid in "${IMPORTED_IDS[@]}"; do
     [ -d "${REPORTS}/${sid}" ] || continue
@@ -1129,34 +1145,41 @@ publish_snapshot() {
     n=$(find "${part}/reports/${sid}" -maxdepth 1 -type f | wc -l)
     echo "reports/${sid}: ${n} file(s)"
   done
-  cp "${LOGS}"/import_*.log "${LOGS}"/import_validation_*.html "${LOGS}/dumpPortalInfo.log" "${part}/logs/" 2>/dev/null || true
+  for sid in "${KEPT_IDS[@]}"; do
+    [ -d "${SNAPSHOTS}/${base}/reports/${sid}" ] || continue
+    mkdir -p "${part}/reports/${sid}"
+    find "${SNAPSHOTS}/${base}/reports/${sid}" -maxdepth 1 -type f -name '*.html' -exec cp -p -t "${part}/reports/${sid}/" {} +
+    n=$(find "${part}/reports/${sid}" -maxdepth 1 -type f | wc -l)
+    echo "reports/${sid}: ${n} file(s) (kept from ${base})"
+  done
+  cp "${LOGS}"/import_*.log "${LOGS}"/import_validation_*.html "${LOGS}"/remove_*.log "${LOGS}/dumpPortalInfo.log" "${part}/logs/" 2>/dev/null || true
+  cp "${plan}" "${part}/logs/plan.json"
   cp "${CONF}/studies.tsv" "${part}/studies.tsv"             # written by ch_studies_tsv while ClickHouse was up
-  python3 -I - "${part}/BUILD_INFO.json" "${CBIO_SNAPSHOT_ID}" "${CBIO_VERSION}" "${CBIO_IMAGE_REF}" \
-      "$("${CH_BIN}" --version 2>/dev/null | head -n 1)" "${manifest}" "${CBIO_REPORTS_URL}" "${CONF}/studies.tsv" \
-      "${CONF}/db_info.json" "${STUDY_SUMMARY}" <<'PYEOF'
+  python3 -I - "${part}/BUILD_INFO.json" "${CBIO_SNAPSHOT_ID}" "${CBIO_VERSION}" "${CBIO_IMAGE_REF}" "${CBIO_IMAGE_ID}" \
+      "$("${CH_BIN}" --version 2>/dev/null | head -n 1)" "${plan}" "${CBIO_REPORTS_URL}" "${CONF}/studies.tsv" \
+      "${CONF}/db_info.json" <<'PYEOF'
 import json, sys, datetime
-out, sid, cbio, image, ch, manifest, rurl, studies_tsv, dbinfo, summary = sys.argv[1:11]
+out, sid, cbio, image, image_id, ch, plan_path, rurl, studies_tsv, dbinfo = sys.argv[1:11]
+plan = json.load(open(plan_path, encoding="utf-8"))
+in_snapshot = list(plan["import"]) + list(plan["keep"])
 studies = []
 for line in open(studies_tsv, encoding="utf-8"):
     f = line.rstrip("\n").split("\t")
     if len(f) >= 3:
-        studies.append({"study_id": f[0], "name": f[1], "import_date": f[2], "groups": f[3] if len(f) >= 4 else ""})
-folders = {}
-for line in open(summary, encoding="utf-8"):
-    f = line.rstrip("\n").split("\t")
-    if len(f) == 2:
-        folders[f[1]] = f[0]
-for s in studies:
-    s["folder"] = folders.get(s["study_id"], "")
+        studies.append({"study_id": f[0], "name": f[1], "import_date": f[2], "groups": f[3] if len(f) >= 4 else "",
+                        "folder": plan["cohorts"].get(f[0], {}).get("folder", "")})
 try:
     db = [json.loads(l) for l in open(dbinfo, encoding="utf-8") if l.strip()]
 except (OSError, ValueError):
     db = []
 info = {"snapshot_id": sid, "created": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
-        "cbio_version": cbio, "image": image, "clickhouse": ch, "manifest": manifest,
-        "reports_url": rurl, "db_info": db, "studies": studies}
+        "cbio_version": cbio, "image": image, "image_id": image_id, "clickhouse": ch,
+        "build_type": plan["mode"], "full_reason": plan["full_reason"], "base_snapshot": plan["base_snapshot"],
+        "rebuilt": plan["import"], "removed": plan["dropped"], "kept": plan["keep"],
+        "reports_url": rurl, "config": plan["config"], "db_info": db, "studies": studies,
+        "cohorts": {s: plan["cohorts"][s] for s in in_snapshot}}
 with open(out, "x", encoding="utf-8") as fh:
-    json.dump(info, fh, indent=2)
+    json.dump(info, fh, indent=1, sort_keys=True)
     fh.write("\n")
 PYEOF
   mv "${part}" "${final}"
@@ -1241,7 +1264,7 @@ do_start() {
   esac
   log "All services up, serving snapshot ${ACTIVE_ID} (${follow}). Logs: ${LOGS}/
  Scheduled sync at ${CBIO_SYNC_TIMES}: snapshot check + access (${access_src}) + cache. Now: sync-now / sync-access.
- New / updated studies: build on the Build VM, then promote (README 'Add / update a study')."
+ New / updated studies: build in the builder pod, then promote (README 'Step by step')."
 
   ## Stay in the foreground. At each CBIO_SYNC_TIMES (or on SIGUSR1 = sync-now): follow CURRENT (switch in place),
   ## re-apply the access, refresh the webapp. If any service exits on its own, stop the others and exit 1
@@ -1335,38 +1358,111 @@ import_study() {
   printf '%s\t%s\n' "${study}" "${study_id}" >> "${STUDY_SUMMARY}"
 }
 
-do_build() {
-  local manifest=${1:-} line folder ids="" i=0
-  local -a folders=()
-  [ -n "${manifest}" ] || die "Usage: /app/entrypoint.sh build /manifests/<name>.txt (one study folder of ${STUDIES} per line)"
-  [ -s "${manifest}" ] || die "manifest ${manifest} not found or empty"
-  log "c3g_cbioportal_instance: build snapshot ${CBIO_SNAPSHOT_ID} ($(date '+%Y-%m-%d %H:%M:%S'))"
+### Incremental builds (README "Incremental builds"): cohort = one folder of /studies = one cBioPortal study
 
-  ## Inputs: manifest lines (# comments and blank lines ignored) = folder names in STUDIES
-  while IFS= read -r line || [ -n "${line}" ]; do
-    line=${line%%#*}
-    line=$(echo "${line}" | tr -d '[:space:]')
-    [ -n "${line}" ] || continue
-    [[ "${line}" =~ ${SAFE_ID_RE} ]] || die "manifest line '${line}': must be a study folder name (letters, digits, _ . -), not a path"
-    [ -s "${STUDIES}/${line}/meta_study.txt" ] || die "manifest: ${STUDIES}/${line}/meta_study.txt not found"
-    folders+=("${line}")
-  done < "${manifest}"
-  [ "${#folders[@]}" -gt 0 ] || die "manifest ${manifest} lists no study folder"
-  for folder in "${folders[@]}"; do
-    line=$(sed -n 's/^cancer_study_identifier:[[:space:]]*//p' "${STUDIES}/${folder}/meta_study.txt" | tr -d '[:space:]')
-    [[ " ${ids} " != *" ${line} "* ]] || die "two manifest folders have the same cancer_study_identifier '${line}'"
-    ids="${ids} ${line}"
+plan_config() {   # the settings a snapshot depends on: any change between CURRENT and now -> full rebuild
+  python3 -I -c 'import json, sys
+keys = ["cbio_version", "image_id", "reports_url", "report_suffix", "report_name", "report_description",
+        "report_open_by_default", "data_dir"]
+print(json.dumps(dict(zip(keys, sys.argv[1:])), sort_keys=True))' \
+    "${CBIO_VERSION}" "${CBIO_IMAGE_ID}" "${CBIO_REPORTS_URL}" "${CBIO_REPORT_SUFFIX}" "${CBIO_REPORT_NAME}" \
+    "${CBIO_REPORT_DESCRIPTION}" "${CBIO_REPORT_OPEN_BY_DEFAULT}" "${DATA}"
+}
+
+remove_study() {   # remove_study <study_id>: cBioPortal's own remove-study (what metaImport.py runs before every import)
+  local rc
+  log "Remove cohort $1 (cBioPortal remove-study)"
+  command -v cbioportalImporter.py > /dev/null || die "cbioportalImporter.py not found in the image (PATH)"
+  set +e
+  cbioportalImporter.py remove-study -id "$1" -jar "${IMPORTER_JAR}" -jvo "${CBIO_IMPORT_JAVA_OPTS}" 2>&1 \
+    | tee "${LOGS}/remove_$1.log"
+  rc=${PIPESTATUS[0]}
+  set -e
+  [ "${rc}" -eq 0 ] || die "remove-study $1 failed (exit ${rc}) - see ${LOGS}/remove_$1.log"
+}
+
+refresh_derived_tables() {   # after removals with no import (metaImport.py refreshes them after every import)
+  log "Derived tables (after removals)"
+  ch_client --database "${CH_DB}" --multiquery --param_optimize_backoff_secs=0 < "${DB_SCRIPTS}/populate_derived_tables.sql"
+}
+
+compact_db() {   # incremental build: drop the rows that remove-study deleted (lightweight DELETE masks), so each
+                 # snapshot doesn't carry every old version of a rebuilt cohort on disk. Data seen by queries is unchanged.
+  local t n=0
+  log "Compact: apply deleted-row masks"
+  while read -r t; do
+    [ -n "${t}" ] || continue
+    if ch_client --mutations_sync=2 --database "${CH_DB}" --query "ALTER TABLE \`${t}\` APPLY DELETED MASK" 2>> "${LOGS}/compact.log"; then
+      n=$((n + 1))
+    else
+      echo "WARNING: APPLY DELETED MASK on ${t} failed (see ${LOGS}/compact.log) - snapshot correct, only larger"
+    fi
+  done < <(ch_client --query "SELECT name FROM system.tables WHERE database = '${CH_DB}' AND engine LIKE '%MergeTree%' ORDER BY name FORMAT TSV")
+  echo "${n} table(s) compacted"
+}
+
+## check [<plan>]: builder side (deploy/c3g-cbioportal-check.sh) - what changed in the drop folder since CURRENT.
+## Writes the plan for `build`; exit 0 = build, 3 = nothing changed, 10 = build that removes cohorts.
+do_check() {
+  local out=$1 rc=0
+  local -a full=()
+  [ "${CBIO_VERSION}" != "unknown" ] || die "CBIO_VERSION is not set in the image (Containerfile ENV)"
+  [ "${CBIO_IMAGE_ID}" != "unknown" ] || die "CBIO_IMAGE_ID is not set - run deploy/c3g-cbioportal-check.sh"
+  [[ "${CBIO_SNAPSHOT_ID}" =~ ${SAFE_ID_RE} ]] && [[ "${CBIO_SNAPSHOT_ID}" != *.partial ]] \
+    || die "CBIO_SNAPSHOT_ID '${CBIO_SNAPSHOT_ID}' is not a valid id (letters, digits, _ . -)"
+  [ -d "$(dirname "${out}")" ] && [ -w "$(dirname "${out}")" ] || die "$(dirname "${out}") is not a writable folder (plan)"
+  [ -d "${SNAPSHOTS}" ] || die "${SNAPSHOTS} not mounted (<shared>/snapshots)"
+  [ -d "${STUDIES}" ] || die "${STUDIES} not mounted (<shared>/studies)"
+  CBIO_AUTH=false
+  check_reports
+  [ "${CBIO_FULL_BUILD}" != "true" ] || full=(--full)
+  log "Check: drop folder vs CURRENT (next snapshot id: ${CBIO_SNAPSHOT_ID})"
+  python3 -I "${COHORT_PLAN}" plan --studies "${STUDIES}" --reports "${REPORTS}" --snapshots "${SNAPSHOTS}" \
+    --config "$(plan_config)" --snapshot-id "${CBIO_SNAPSHOT_ID}" --out "${out}" "${full[@]}" || rc=$?
+  exit "${rc}"
+}
+
+## build <plan>: builder pod - the plan made by `check` (deploy/c3g-cbioportal-check.sh, then deploy/c3g-cbioportal-build.sh)
+do_build() {
+  local plan=${1:-} key a b mode="" base="" psnap="" msg sid folder want have i=0
+  local -a imports=() import_ids=() removes=()
+  KEPT_IDS=()
+  [ -n "${plan}" ] && [ -s "${plan}" ] \
+    || die "Usage: /app/entrypoint.sh build /plan.json - the plan comes from deploy/c3g-cbioportal-check.sh"
+  log "c3g_cbioportal_instance: build snapshot ${CBIO_SNAPSHOT_ID} ($(date '+%Y-%m-%d %H:%M:%S'))"
+  [ "${CBIO_VERSION}" != "unknown" ] || die "CBIO_VERSION is not set in the image (Containerfile ENV) - cannot label the snapshot"
+  [ "${CBIO_IMAGE_ID}" != "unknown" ] || die "CBIO_IMAGE_ID is not set - run the build through deploy/c3g-cbioportal-check.sh"
+
+  ## The plan: what to remove, import (whole cohorts) and keep from the base snapshot
+  while read -r key a b; do
+    case "${key}" in
+      mode)     mode=${a} ;;
+      snapshot) psnap=${a} ;;
+      base)     base=${a} ;;
+      remove)   removes+=("${a}") ;;
+      import)   import_ids+=("${a}"); imports+=("${b}") ;;
+      keep)     KEPT_IDS+=("${a}") ;;
+    esac
+  done < <(python3 -I "${COHORT_PLAN}" lines --plan "${plan}")
+  [ "${mode}" == "full" ] || [ "${mode}" == "incremental" ] || die "cannot read the plan ${plan} (mode '${mode}')"
+  [ "${psnap}" == "${CBIO_SNAPSHOT_ID}" ] || die "the plan is for snapshot '${psnap}', this build is ${CBIO_SNAPSHOT_ID}"
+  for sid in "${import_ids[@]}" "${imports[@]}" "${removes[@]}" "${KEPT_IDS[@]}" ${base:+"${base}"}; do
+    [[ "${sid}" =~ ${SAFE_ID_RE} ]] || die "plan: '${sid}' is not a valid study id / folder / snapshot id"
   done
-  echo "Studies (${#folders[@]}): ${folders[*]}"
+  [ "${mode}" == "full" ] || [ -n "${base}" ] || die "incremental plan without a base snapshot"
+  [ "${#imports[@]}" -gt 0 ] || [ "${#removes[@]}" -gt 0 ] || die "the plan has nothing to import or remove"
+  echo "Build type: ${mode^^}${base:+ on CURRENT = ${base}}"
+  echo "Import (${#imports[@]}): ${import_ids[*]:-none}"
+  echo "Remove (${#removes[@]}): ${removes[*]:-none}"
+  echo "Keep   (${#KEPT_IDS[@]}): ${KEPT_IDS[*]:-none}"
 
   ## Output: a writable shared snapshots folder, a new id, an empty local scratch
   [ -d "${SNAPSHOTS}" ] && [ -w "${SNAPSHOTS}" ] || die "${SNAPSHOTS} is not a writable folder - mount <shared>/snapshots there"
   [[ "${CBIO_SNAPSHOT_ID}" =~ ${SAFE_ID_RE} ]] && [[ "${CBIO_SNAPSHOT_ID}" != *.partial ]] \
     || die "CBIO_SNAPSHOT_ID '${CBIO_SNAPSHOT_ID}' is not a valid id (letters, digits, _ . -)"
   [ ! -e "${SNAPSHOTS}/${CBIO_SNAPSHOT_ID}" ] && [ ! -e "${SNAPSHOTS}/${CBIO_SNAPSHOT_ID}.partial" ] \
-    || die "${SNAPSHOTS}/${CBIO_SNAPSHOT_ID} already exists - snapshots are never overwritten; use a new CBIO_SNAPSHOT_ID"
+    || die "${SNAPSHOTS}/${CBIO_SNAPSHOT_ID} already exists - snapshots are never overwritten; run the check again"
   [ -z "$(ls -A "${DATA}/clickhouse" 2>/dev/null)" ] || die "${DATA}/clickhouse is not empty - a build needs an empty scratch folder at ${DATA}"
-  [ "${CBIO_VERSION}" != "unknown" ] || die "CBIO_VERSION is not set in the image (Containerfile ENV) - cannot label the snapshot"
 
   ## The importer needs no login: application.properties without OIDC
   CBIO_AUTH=false
@@ -1378,24 +1474,64 @@ do_build() {
   build_importer_jar
   : > "${STUDY_SUMMARY}"
 
+  ## The drop folder may have changed since the check: the cohorts to import must still match the plan
+  log "Plan check"
+  python3 -I "${COHORT_PLAN}" verify --plan "${plan}" --studies "${STUDIES}" --reports "${REPORTS}" \
+    --config "$(plan_config)" --snapshot-id "${CBIO_SNAPSHOT_ID}" \
+    || die "the drop folder or the settings changed since the check - run deploy/c3g-cbioportal-check.sh again"
+  if [ "${mode}" == "incremental" ]; then
+    msg=$(validate_snapshot "${base}") || die "base snapshot: ${msg}"
+    echo "${msg}"
+  fi
+
   trap 'build_exit $?' EXIT
   trap 'exit 1' TERM INT
 
-  log "1/4 ClickHouse (${DATA}/clickhouse, local scratch)"; start_clickhouse; init_db
-  for folder in "${folders[@]}"; do
-    i=$((i + 1))
-    log "2/4 Study ${i}/${#folders[@]}: ${folder}"
-    import_study "${STUDIES}/${folder}"
+  if [ "${mode}" == "full" ]; then
+    log "1/5 ClickHouse: empty database (${DATA}/clickhouse, local scratch)"
+    start_clickhouse
+    init_db
+  else
+    log "1/5 ClickHouse: copy of CURRENT = ${base} (${DATA}/clickhouse, local scratch)"
+    copy_snapshot "${base}" "${DATA}/clickhouse" || die "copy of ${SNAPSHOTS}/${base}/clickhouse failed"
+    rm -f "${DATA}/clickhouse/.snapshot_id"
+    start_clickhouse
+    check_seed
+    migrate_schema
+  fi
+
+  log "2/5 Remove ${#removes[@]} cohort(s) no longer in studies/"
+  for sid in "${removes[@]}"; do
+    remove_study "${sid}"
   done
-  log "3/4 Studies in the snapshot"
+
+  for folder in "${imports[@]}"; do
+    i=$((i + 1))
+    log "3/5 Cohort ${i}/${#imports[@]}: ${folder} (whole cohort; an older version is removed first)"
+    import_study "${STUDIES}/${folder}"
+    [ "${study_id}" == "${import_ids[$((i - 1))]}" ] \
+      || die "studies/${folder} now has cancer_study_identifier '${study_id}', the plan says '${import_ids[$((i - 1))]}'"
+  done
+  if [ "${mode}" == "incremental" ]; then
+    [ "${#imports[@]}" -gt 0 ] || refresh_derived_tables
+    compact_db
+  fi
+
+  log "4/5 Studies in the snapshot"
   ch_studies_tsv
+  want=$(printf '%s\n' "${import_ids[@]}" "${KEPT_IDS[@]}" | sed '/^$/d' | sort)
+  have=$(cut -f 1 "${CONF}/studies.tsv" | sort)
+  [ "${want}" == "${have}" ] || die "the studies in the database differ from the plan.
+       In the DB:   $(echo ${have})
+       Plan wanted: $(echo ${want})"
   stop_service "${CH_PID}" "ClickHouse" 120; CH_PID=""     # clean stop before the DB folder is copied
-  log "4/4 Publish"
-  publish_snapshot "$(basename "${manifest}")"
+
+  log "5/5 Publish"
+  publish_snapshot "${plan}" "${base}"
   trap - EXIT TERM INT
-  log "Build done: ${SNAPSHOTS}/${CBIO_SNAPSHOT_ID}
+  log "Build done (${mode}): ${SNAPSHOTS}/${CBIO_SNAPSHOT_ID}
  Put it live: deploy/c3g-cbioportal-promote.sh ${CBIO_SNAPSHOT_ID} (shows what changes, asks, writes CURRENT);
- the host switches at its next sync time or with sync-now (README 'Add / update a study').
+ the host switches at its next sync time or with sync-now (README 'Step by step').
  The scratch folder (${DATA} here) is no longer needed."
 }
 
@@ -1434,15 +1570,15 @@ print("\n   * = served by this host, > = CURRENT")
 PYEOF
 }
 
-## promote <id> [--yes]: Build VM - make <id> the snapshot the host serves (SNAPSHOTS/CURRENT).
+## promote <id> [--yes]: builder side - make <id> the snapshot the host serves (SNAPSHOTS/CURRENT).
 ## Shows the change against CURRENT (studies added / removed, groups changed), asks, then writes CURRENT atomically.
 ## Removing a study needs a typed 'yes' (or CBIO_ALLOW_REMOVE=true with --yes).
 do_promote() {
   local id=${1:-} yes=${2:-} msg cur rc=0 ans tmp
   [ -n "${id}" ] || die "Usage: /app/entrypoint.sh promote <snapshot id> [--yes]   (deploy/c3g-cbioportal-promote.sh <id>)"
   [ -z "${yes}" ] || [ "${yes}" == "--yes" ] || die "unknown option '${yes}' (only --yes)"
-  [ -d "${SNAPSHOTS}" ] && [ -w "${SNAPSHOTS}" ] || die "${SNAPSHOTS} is not writable - promote runs on the Build VM
-       (deploy/c3g-cbioportal-promote.sh mounts <shared>/snapshots read-write; the host only reads it)"
+  [ -d "${SNAPSHOTS}" ] && [ -w "${SNAPSHOTS}" ] || die "${SNAPSHOTS} is not writable - promote runs on the builder side
+       (deploy/c3g-cbioportal-promote.sh mounts <shared>/snapshots read-write; the host pod only reads it)"
   msg=$(validate_snapshot "${id}") || die "${msg}"
   cur=$(read_current || true)
   log "Promote ${id} (CURRENT now: ${cur:-none})"
@@ -1496,7 +1632,7 @@ for sid in sorted(set(old) | set(nxt)):
 print(f"\n  {len(old)} -> {len(nxt)} studies ({len(set(nxt) - set(old))} added, {len(removed)} removed)")
 if removed:
     print(f"\n  !!! {len(removed)} study(ies) would DISAPPEAR from the portal: {', '.join(removed)}")
-    print("  !!! (the manifest is the full list of studies - was a line left out?)")
+    print("  !!! (every folder in studies/ is a study - was a folder deleted or renamed?)")
     sys.exit(10)
 PYEOF
   [ "${rc}" -eq 0 ] || [ "${rc}" -eq 10 ] || die "could not compare ${id} with CURRENT (${cur:-none})"
@@ -1605,6 +1741,7 @@ do_healthcheck() {
 
 
 case "${CMD}" in
+  check)       do_check "${2:-/plan/plan.json}" ;;
   build)       do_build "${2:-}" ;;
   start)       do_start ;;
   snapshots)   do_snapshots ;;
@@ -1614,21 +1751,21 @@ case "${CMD}" in
   users)       do_users ;;
   sync-access) do_sync_access ;;
   healthcheck) do_healthcheck ;;
-  import)      die "the portal no longer imports: studies go into a snapshot made on the Build VM
-       (deploy/c3g-cbioportal-build.sh -> /app/entrypoint.sh build <manifest>), README 'Add / update a study'" ;;
-  *)           echo "Usage: /app/entrypoint.sh {build /manifests/<name>.txt|promote <id> [--yes]|start|snapshots|studies|users|sync-now|sync-access|healthcheck}"; exit 1 ;;
+  import)      die "the portal no longer imports: studies go into a snapshot made by the builder pod
+       (deploy/c3g-cbioportal-check.sh -> /app/entrypoint.sh check + build <plan>), README 'Step by step'" ;;
+  *)           echo "Usage: /app/entrypoint.sh {check [/plan/plan.json]|build /plan.json|promote <id> [--yes]|start|snapshots|studies|users|sync-now|sync-access|healthcheck}"; exit 1 ;;
 esac
 
 
 ### How to run: ###
-# (full commands in README.md; <shared> = the SD4H storage mounted on both VMs)
-# --- Build VM: study folders + PCGR reports on the shared storage, one manifest per build
+# (full commands in README.md; <shared> = the data drop folder on the VM, seen by both pods)
+# --- Builder pod: one folder per study in <shared>/studies/, its PCGR reports in <shared>/reports/<study_id>/
 # cp -r <study_folder> <shared>/studies/
 # mkdir -p <shared>/reports/<cancer_study_identifier> && cp <group>.pcgr_acmg.grch38.flexdb.html ... <shared>/reports/<cancer_study_identifier>/
-# echo <study_folder> >> <shared>/manifests/portal.txt        # every study the portal should serve
-# ./deploy/c3g-cbioportal-build.sh portal.txt                  # = podman run --rm ... build /manifests/portal.txt
+# ./deploy/c3g-cbioportal-check.sh                             # what changed since CURRENT, asks y/N, then builds
+#                                                              #   only the new / changed cohorts (FULL=true: all)
 # ./deploy/c3g-cbioportal-promote.sh <id>                      # shows the change, asks, writes <shared>/snapshots/CURRENT
-# --- Host VM (as user genome via `sudo machinectl shell genome@`; unit: -e CBIO_DB_SNAPSHOT=current)
+# --- Host pod (as user genome via `sudo machinectl shell genome@`; unit: -e CBIO_DB_SNAPSHOT=current)
 # study access = c3g_cbioportal/data.json in c3g-opa-policies (OPA bundle) x the COmanage groups in the token
 # (nothing to do after a promote: the host switches at 06:00 / 18:00 = CBIO_SYNC_TIMES, without a restart)
 # podman exec c3g-cbioportal /app/entrypoint.sh sync-now       # switch + access now instead of waiting
@@ -1638,4 +1775,4 @@ esac
 # podman exec c3g-cbioportal /app/entrypoint.sh sync-access    # after an OPA policy change, instead of waiting for 06:00 / 18:00
 # curl -s -X POST http://127.0.0.1:8181/v1/data/c3g_cbioportal/authz/study_access   # what OPA allows (on the VM)
 # podman healthcheck run c3g-cbioportal
-# systemctl --user stop c3g-cbioportal.service              # clean, ordered shutdown (--stop-timeout 300)
+# systemctl --user stop c3g-cbioportal-pod.service          # clean, ordered shutdown of the host pod (--stop-timeout 300)

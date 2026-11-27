@@ -1,30 +1,36 @@
-# systemd user unit for the C3G webapp VM, from the web-app-template (for-maintainers.md).
+# systemd user unit for the portal, from the web-app-template (for-maintainers.md). It runs INSIDE the host pod
+# (c3g-cbioportal-pod.service), next to its OPA (c3g-cbioportal-opa.service).
 # Additions to the template, all marked "c3g_cbioportal_instance:":
+#   --pod-id-file (no --network / -p)         -> member of the host pod: the pod owns the network and the ports
+#                                                (8080 portal, 8090 PCGR report gatekeeper, README "PCGR reports")
 #   --stop-timeout / -t 300 + TimeoutStopSec  -> time for the ordered shutdown (ClickHouse last, cleanly)
+#   --memory-reservation 12g                  -> cgroup v2 memory.low: the portal's memory is the last to be
+#                                                reclaimed (counts only if user@<uid>.service also has MemoryLow,
+#                                                README "For web app maintainers"); no hard cap on the host
 #   --secret x2, -e x2                        -> OIDC login + ClickHouse password
-#   -e CBIO_AUTHZ, -e OPA_URL, Wants/After opa unit -> study access decided by the app's OPA (c3g-cbioportal-opa.service)
-#                                                     x the COmanage groups in the token; OPA down -> every study hidden
-#   -p 8090:8090                              -> PCGR report gatekeeper, nginx location /reports/ (README "PCGR reports")
-#   -v <shared>/snapshots:/snapshots:ro       -> DB snapshots made on the Build VM (shared SD4H storage, read-only)
-#   -e CBIO_DB_SNAPSHOT=current               -> serve <shared>/snapshots/CURRENT (moved by promote on the Build VM);
+#   -e CBIO_AUTHZ, -e OPA_URL, After opa unit -> study access decided by the app's OPA (same pod, 127.0.0.1:8181)
+#                                                x the COmanage groups in the token; OPA down -> every study hidden
+#   -v <shared>/snapshots:/snapshots:ro,z     -> DB snapshots made by the builder pod on the same VM (read-only;
+#                                                z = SELinux label shared with the builder pod)
+#   -e CBIO_DB_SNAPSHOT=current               -> serve <shared>/snapshots/CURRENT (moved by promote);
 #                                                switched in place at CBIO_SYNC_TIMES, no restart. <id> = pinned
 #   -e TZ, -e CBIO_SYNC_TIMES                 -> local times of the scheduled sync (snapshot check + OPA access)
-# Install (as genome, via `sudo machinectl shell genome@`), after c3g-cbioportal-opa.service:
+# Install (as genome, via `sudo machinectl shell genome@`), with c3g-cbioportal-pod.service (which starts it):
 #   cp c3g-cbioportal.service ~/.config/systemd/user/.
-#   systemctl --user enable --now c3g-cbioportal.service
+#   systemctl --user enable c3g-cbioportal.service
 ## CHANGE HERE ## <issuer_url>, <client_id>
-## CHANGE HERE - ASK ## host port 8080 (-p 8080:8080): agree the host port with the maintainer
-## CHANGE HERE - ASK ## host port 8090 (-p 8090:8090): report gatekeeper, agree it with the maintainer
-## CHANGE HERE - ASK ## <shared_snapshots>: where the shared SD4H storage's cbioportal/snapshots is mounted on this VM
+## CHANGE HERE - ASK ## <shared>: the data drop folder on this VM (its snapshots/ subfolder is mounted here).
+##                      Local disk: keep ':ro,z'. If it turns out to be NFS: ':ro' only (never relabel NFS)
 [Unit]
 Description=C3G cBioPortal (c3g_cbioportal_instance)
 Documentation=man:podman-generate-systemd(1)
 Documentation=https://github.com/c3g/c3g_cbioportal_instance
 Wants=network-online.target
-# c3g_cbioportal_instance: start after its OPA (without it every study is hidden)
-Wants=c3g-cbioportal-opa.service
-After=network-online.target c3g-cbioportal-opa.service
+After=network-online.target
 RequiresMountsFor=%t/containers
+# c3g_cbioportal_instance: member of the host pod, started after its OPA (without it every study is hidden)
+BindsTo=c3g-cbioportal-pod.service
+After=c3g-cbioportal-pod.service c3g-cbioportal-opa.service
 
 [Service]
 Environment=PODMAN_SYSTEMD_UNIT=%n
@@ -32,18 +38,19 @@ Restart=on-failure
 # c3g_cbioportal_instance: ordered shutdown needs up to ~5 min
 TimeoutStopSec=330
 ExecStartPre=/bin/rm -f %t/%n.ctr-id
-## CHANGE HERE - ASK ## host ports in -p 8090:8090 and -p 8080:8080 below
 ExecStart=/usr/bin/podman run \
 	--cidfile=%t/%n.ctr-id \
 	--cgroups=no-conmon \
 	--rm \
+	--pod-id-file %t/c3g-cbioportal-pod.pod-id \
 	--sdnotify=conmon \
 	-d \
 	--replace \
 	--name c3g-cbioportal \
 	--stop-timeout=300 \
+	--memory-reservation 12g \
 	-v /home/genome/cbioportal-volume:/data:Z \
-	-v <shared_snapshots>:/snapshots:ro \
+	-v <shared>/snapshots:/snapshots:ro,z \
 	-e CBIO_DB_SNAPSHOT=current \
 	-e TZ=America/Toronto \
 	-e CBIO_SYNC_TIMES="06:00 18:00" \
@@ -52,11 +59,9 @@ ExecStart=/usr/bin/podman run \
 	-e OIDC_ISSUER=<issuer_url> \
 	-e OIDC_CLIENT_ID=<client_id> \
 	-e CBIO_AUTHZ=opa \
-	-e OPA_URL=http://10.0.2.2:8181 \
+	-e OPA_URL=http://127.0.0.1:8181 \
 	--label io.containers.autoupdate=registry \
-	--network slirp4netns:allow_host_loopback=true \
-	-p 8090:8090 \
-	-p 8080:8080 ghcr.io/c3g/c3g_cbioportal_instance:latest
+	ghcr.io/c3g/c3g_cbioportal_instance:latest
 ExecStop=/usr/bin/podman stop --ignore -t 300 --cidfile=%t/%n.ctr-id
 ExecStopPost=/usr/bin/podman rm -f --ignore --cidfile=%t/%n.ctr-id
 Type=notify

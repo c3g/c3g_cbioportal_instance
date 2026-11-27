@@ -1,25 +1,27 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1535" height="590" viewBox="0 0 1535 590">
 <defs><marker id="ah" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L10,4 L0,8 z" fill="#333"/></marker><marker id="ah-start" markerWidth="10" markerHeight="8" refX="1" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M10,0 L0,4 L10,8 z" fill="#333"/></marker></defs>
 <rect width="1535" height="590" fill="#ffffff"/>
+<rect x="8" y="88" width="1240" height="494" rx="12" fill="#f5f9ff" stroke="#6c8ebf" stroke-width="1.6" stroke-dasharray="7,4"/>
+<text x="20" y="110" font-family="Helvetica, Arial, sans-serif" font-size="15" font-weight="bold" font-style="normal" text-anchor="start" fill="#2a4d80">One SD4H VM  (podman, user genome)</text>
 <rect x="20" y="120" width="340" height="281" fill="#fffdf5" stroke="#d6b656" stroke-width="1.2"/>
 <rect x="20" y="120" width="340" height="30" fill="#fff2cc" stroke="#d6b656" stroke-width="1.2"/>
-<text x="190.0" y="140" font-family="Helvetica, Arial, sans-serif" font-size="14" font-weight="bold" font-style="normal" text-anchor="middle" fill="#222">Build VM  (imports, never serves)</text>
+<text x="190.0" y="140" font-family="Helvetica, Arial, sans-serif" font-size="14" font-weight="bold" font-style="normal" text-anchor="middle" fill="#222">Builder pod  (imports, never serves)</text>
 <rect x="850" y="120" width="380" height="445" fill="#fffdf5" stroke="#d6b656" stroke-width="1.2"/>
 <rect x="850" y="120" width="380" height="30" fill="#fff2cc" stroke="#d6b656" stroke-width="1.2"/>
-<text x="1040.0" y="140" font-family="Helvetica, Arial, sans-serif" font-size="14" font-weight="bold" font-style="normal" text-anchor="middle" fill="#222">Host VM  (serves, never imports)</text>
+<text x="1040.0" y="140" font-family="Helvetica, Arial, sans-serif" font-size="14" font-weight="bold" font-style="normal" text-anchor="middle" fill="#222">Host pod  (serves, never imports)</text>
 <rect x="875" y="170" width="330" height="266" fill="#fffdf5" stroke="#d6b656" stroke-width="1.2"/>
 <rect x="875" y="170" width="330" height="30" fill="#fff2cc" stroke="#d6b656" stroke-width="1.2"/>
 <text x="1040.0" y="190" font-family="Helvetica, Arial, sans-serif" font-size="14" font-weight="bold" font-style="normal" text-anchor="middle" fill="#222">portal container</text>
 <rect x="440" y="140" width="330" height="298" rx="10" fill="#f8cecc" stroke="#b85450" stroke-width="1.2"/>
-<text x="605.0" y="166" font-family="Helvetica, Arial, sans-serif" font-size="15" font-weight="bold" font-style="normal" text-anchor="middle" fill="#222">Shared SD4H storage</text>
-<text x="605.0" y="185" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="normal" font-style="italic" text-anchor="middle" fill="#222">the data: a separate node, mounted on both VMs</text>
+<text x="605.0" y="166" font-family="Helvetica, Arial, sans-serif" font-size="15" font-weight="bold" font-style="normal" text-anchor="middle" fill="#222">Drop folder  (&lt;shared&gt;)</text>
+<text x="605.0" y="185" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="normal" font-style="italic" text-anchor="middle" fill="#222">on the VM, seen by both pods</text>
 <rect x="458" y="202" width="294" height="46" rx="4" fill="#ffffff" stroke="#b85450"/>
-<text x="470" y="221" font-family="Menlo, Consolas, monospace" font-size="13" font-weight="bold" font-style="normal" text-anchor="start" fill="#222">studies/  reports/</text>
-<text x="470" y="239" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="normal" font-style="normal" text-anchor="start" fill="#222">pipeline output, PCGR reports</text>
+<text x="470" y="221" font-family="Menlo, Consolas, monospace" font-size="13" font-weight="bold" font-style="normal" text-anchor="start" fill="#222">studies/&lt;cohort&gt;/</text>
+<text x="470" y="239" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="normal" font-style="normal" text-anchor="start" fill="#222">one folder per study (cohort)</text>
 <text x="740" y="221" font-family="Helvetica, Arial, sans-serif" font-size="11" font-weight="bold" font-style="normal" text-anchor="end" fill="#b85450">INPUT</text>
 <rect x="458" y="260" width="294" height="46" rx="4" fill="#ffffff" stroke="#b85450"/>
-<text x="470" y="279" font-family="Menlo, Consolas, monospace" font-size="13" font-weight="bold" font-style="normal" text-anchor="start" fill="#222">manifests/portal.txt</text>
-<text x="470" y="297" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="normal" font-style="normal" text-anchor="start" fill="#222">the studies to serve</text>
+<text x="470" y="279" font-family="Menlo, Consolas, monospace" font-size="13" font-weight="bold" font-style="normal" text-anchor="start" fill="#222">reports/&lt;study_id&gt;/</text>
+<text x="470" y="297" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="normal" font-style="normal" text-anchor="start" fill="#222">PCGR reports</text>
 <text x="740" y="279" font-family="Helvetica, Arial, sans-serif" font-size="11" font-weight="bold" font-style="normal" text-anchor="end" fill="#b85450">INPUT</text>
 <rect x="458" y="318" width="294" height="46" rx="4" fill="#ffffff" stroke="#b85450"/>
 <text x="470" y="337" font-family="Menlo, Consolas, monospace" font-size="13" font-weight="bold" font-style="normal" text-anchor="start" fill="#222">snapshots/&lt;id&gt;/</text>
@@ -31,9 +33,9 @@
 <text x="740" y="395" font-family="Helvetica, Arial, sans-serif" font-size="11" font-weight="bold" font-style="normal" text-anchor="end" fill="#b85450">PROMOTE</text>
 <rect x="45" y="175" width="290" height="78" fill="#ffffff" stroke="#0e8088" stroke-width="1.2"/>
 <rect x="45" y="175" width="290" height="28" fill="#b0e3e6" stroke="#0e8088" stroke-width="1.2"/>
-<text x="190.0" y="194" font-family="Helvetica, Arial, sans-serif" font-size="13.5" font-weight="bold" font-style="normal" text-anchor="middle" fill="#222">Build</text>
-<text x="190.0" y="223" font-family="Helvetica, Arial, sans-serif" font-size="13" font-weight="normal" font-style="normal" text-anchor="middle" fill="#222">imports every study of the manifest</text>
-<text x="190.0" y="242" font-family="Helvetica, Arial, sans-serif" font-size="13" font-weight="normal" font-style="normal" text-anchor="middle" fill="#222">into a new database (snapshot)</text>
+<text x="190.0" y="194" font-family="Helvetica, Arial, sans-serif" font-size="13.5" font-weight="bold" font-style="normal" text-anchor="middle" fill="#222">Check + build</text>
+<text x="190.0" y="223" font-family="Helvetica, Arial, sans-serif" font-size="13" font-weight="normal" font-style="normal" text-anchor="middle" fill="#222">re-imports only new / changed cohorts</text>
+<text x="190.0" y="242" font-family="Helvetica, Arial, sans-serif" font-size="13" font-weight="normal" font-style="normal" text-anchor="middle" fill="#222">into a copy of CURRENT (snapshot)</text>
 <circle cx="329" cy="175" r="12" fill="#ffcc99" stroke="#d79b00" stroke-width="1.2"/>
 <text x="329" y="180" font-family="Helvetica, Arial, sans-serif" font-size="13" font-weight="bold" font-style="normal" text-anchor="middle" fill="#222">2</text>
 <rect x="45" y="298" width="290" height="78" fill="#ffffff" stroke="#0e8088" stroke-width="1.2"/>
@@ -55,6 +57,8 @@
 <text x="1040.0" y="405" font-family="Helvetica, Arial, sans-serif" font-size="13" font-weight="normal" font-style="normal" text-anchor="middle" fill="#222">writes OPA's groups into it</text>
 <circle cx="1181" cy="338" r="12" fill="#ffcc99" stroke="#d79b00" stroke-width="1.2"/>
 <text x="1181" y="343" font-family="Helvetica, Arial, sans-serif" font-size="13" font-weight="bold" font-style="normal" text-anchor="middle" fill="#222">4</text>
+<text x="190.0" y="393" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="normal" font-style="italic" text-anchor="middle" fill="#7a5c00">capped: cores 6-7, 10 GB, killed first</text>
+<text x="1040.0" y="557" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="normal" font-style="italic" text-anchor="middle" fill="#7a5c00">no cap: all cores, 12 GB reserved</text>
 <rect x="875" y="481" width="330" height="59" fill="#ffffff" stroke="#0e8088" stroke-width="1.2"/>
 <rect x="875" y="481" width="330" height="28" fill="#b0e3e6" stroke="#0e8088" stroke-width="1.2"/>
 <text x="1040.0" y="500" font-family="Helvetica, Arial, sans-serif" font-size="13.5" font-weight="bold" font-style="normal" text-anchor="middle" fill="#222">OPA</text>
@@ -68,7 +72,7 @@
 <text x="730" y="27" font-family="Helvetica, Arial, sans-serif" font-size="13" font-weight="bold" font-style="normal" text-anchor="middle" fill="#222">1</text>
 <polyline points="605.0,78 605.0,140" fill="none" stroke="#333" stroke-width="1.3" marker-end="url(#ah)"/>
 <text x="613.0" y="100" font-family="Helvetica, Arial, sans-serif" font-size="12" text-anchor="start" fill="#222" stroke="#ffffff" stroke-width="3" paint-order="stroke">copies data,</text>
-<text x="613.0" y="115" font-family="Helvetica, Arial, sans-serif" font-size="12" text-anchor="start" fill="#222" stroke="#ffffff" stroke-width="3" paint-order="stroke">edits the manifest</text>
+<text x="613.0" y="115" font-family="Helvetica, Arial, sans-serif" font-size="12" text-anchor="start" fill="#222" stroke="#ffffff" stroke-width="3" paint-order="stroke">then runs the check</text>
 <rect x="903" y="20" width="274" height="58" rx="10" fill="#f8cecc" stroke="#b85450" stroke-width="1.2"/>
 <text x="1040.0" y="45.5" font-family="Helvetica, Arial, sans-serif" font-size="13.5" font-weight="bold" font-style="normal" text-anchor="middle" fill="#222">User</text>
 <text x="1040.0" y="62.5" font-family="Helvetica, Arial, sans-serif" font-size="13.5" font-weight="normal" font-style="normal" text-anchor="middle" fill="#222">web browser</text>
